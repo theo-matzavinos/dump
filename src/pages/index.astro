@@ -1,0 +1,71 @@
+---
+import { getCollection } from 'astro:content';
+import FormattedDate from '../components/FormattedDate.astro';
+import { SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import SiteLayout from '../layouts/SiteLayout.astro';
+import { getVisibleBlogPosts } from '../utils/blog';
+
+const posts = getVisibleBlogPosts(await getCollection('blog'));
+const heroPost = posts[0];
+const latestPosts = posts.slice(1, 4);
+---
+
+<SiteLayout title={SITE_TITLE} description={SITE_DESCRIPTION}>
+	<section class="hero">
+		<div class="hero__copy">
+			<p class="eyebrow">Article</p>
+			{
+				heroPost && (
+					<>
+						<h1>{heroPost.data.title}</h1>
+						<p class="hero__lede">{heroPost.data.description}</p>
+						<div class="hero__actions">
+							<a class="button" href={`/blog/${heroPost.id}/`}>Read the article</a>
+							<a class="button button--ghost" href="/blog">Open archive</a>
+						</div>
+					</>
+				)
+			}
+		</div>
+		<div class="feature-panel">
+			<p class="eyebrow">Inside</p>
+			<ul class="feature-list">
+				<li>Manual construction, singletons, and dependency graphs</li>
+				<li>Tokens, providers, and Angular’s `@Injectable()` model</li>
+				<li>Environment injectors and element injectors</li>
+				<li>Mermaid diagrams and syntax-highlighted TypeScript examples</li>
+			</ul>
+		</div>
+	</section>
+
+	{
+		latestPosts.length > 0 && (
+			<>
+				<section class="section-heading">
+					<div>
+						<p class="eyebrow">Latest</p>
+						<h2>More recent articles</h2>
+					</div>
+					<a class="section-link" href="/blog">View all posts</a>
+				</section>
+
+				<div class="post-grid">
+					{
+						latestPosts.map((post) => (
+							<article class="post-card">
+								<p class="post-card__date">
+									<FormattedDate date={post.data.pubDate} />
+								</p>
+								<h3>
+									<a href={`/blog/${post.id}/`}>{post.data.title}</a>
+								</h3>
+								<p>{post.data.description}</p>
+								{post.data.tags.length > 0 && <ul class="tag-list">{post.data.tags.map((tag) => <li>{tag}</li>)}</ul>}
+							</article>
+						))
+					}
+				</div>
+			</>
+		)
+	}
+</SiteLayout>

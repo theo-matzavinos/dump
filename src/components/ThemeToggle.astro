@@ -1,0 +1,95 @@
+<button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
+	<span class="theme-toggle__label">Theme</span>
+	<span class="theme-toggle__value" data-theme-toggle-value>Light</span>
+</button>
+
+<script>
+	const storageKey = 'theme-preference';
+	type Theme = 'light' | 'dark';
+
+	const getPreferredTheme = (): Theme => {
+		const stored = localStorage.getItem(storageKey);
+		if (stored === 'light' || stored === 'dark') {
+			return stored;
+		}
+
+		return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+	};
+
+	const syncButtons = (theme: Theme) => {
+		document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]').forEach((button) => {
+			button.setAttribute('aria-pressed', String(theme === 'dark'));
+			const value = button.querySelector('[data-theme-toggle-value]');
+			if (value) {
+				value.textContent = theme === 'dark' ? 'Dark' : 'Light';
+			}
+		});
+	};
+
+	const applyTheme = (theme: Theme, persist = true) => {
+		document.documentElement.dataset.theme = theme;
+		document.documentElement.style.colorScheme = theme;
+		syncButtons(theme);
+
+		if (persist) {
+			localStorage.setItem(storageKey, theme);
+		}
+
+		document.dispatchEvent(new CustomEvent('theme-changed', { detail: theme }));
+	};
+
+	const wireThemeToggle = () => {
+		const theme = (document.documentElement.dataset.theme as Theme | undefined) || getPreferredTheme();
+		applyTheme(theme, false);
+
+		document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]').forEach((button) => {
+			if (button.dataset.bound === 'true') {
+				return;
+			}
+
+			button.dataset.bound = 'true';
+			button.addEventListener('click', () => {
+				const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+				applyTheme(nextTheme);
+			});
+		});
+	};
+
+	wireThemeToggle();
+	document.addEventListener('astro:after-swap', wireThemeToggle);
+</script>
+
+<style>
+	.theme-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.65rem;
+		padding: 0.6rem 0.9rem;
+		border: 1px solid var(--surface-border);
+		border-radius: 999px;
+		background: var(--surface);
+		color: var(--text-primary);
+		font: inherit;
+		cursor: pointer;
+		transition:
+			transform 180ms ease,
+			border-color 180ms ease,
+			background-color 180ms ease;
+	}
+
+	.theme-toggle:hover {
+		transform: translateY(-1px);
+		border-color: var(--accent);
+	}
+
+	.theme-toggle__label {
+		color: var(--text-muted);
+		font-size: 0.8rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.theme-toggle__value {
+		font-weight: 700;
+	}
+</style>

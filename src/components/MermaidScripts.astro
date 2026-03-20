@@ -1,0 +1,48 @@
+<script>
+	import mermaid from 'mermaid';
+
+	let activeTheme = '';
+
+	const diagramNodes = () => Array.from(document.querySelectorAll<HTMLElement>('.mermaid'));
+
+	const resetDiagramNode = (node: HTMLElement) => {
+		const source = node.dataset.mermaidSource ?? node.textContent ?? '';
+		node.textContent = source;
+		node.removeAttribute('data-processed');
+	};
+
+	const renderDiagrams = async () => {
+		const nodes = diagramNodes();
+		if (!nodes.length) {
+			return;
+		}
+
+		const theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'neutral';
+
+		if (theme !== activeTheme) {
+			mermaid.initialize({
+				startOnLoad: false,
+				securityLevel: 'loose',
+				fontFamily: 'Atkinson, sans-serif',
+				theme,
+			});
+			activeTheme = theme;
+		}
+
+		nodes.forEach(resetDiagramNode);
+		await mermaid.run({ nodes });
+	};
+
+	const scheduleRender = () => {
+		void renderDiagrams();
+	};
+
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', scheduleRender, { once: true });
+	} else {
+		scheduleRender();
+	}
+
+	document.addEventListener('astro:after-swap', scheduleRender);
+	document.addEventListener('theme-changed', scheduleRender);
+</script>

@@ -1,0 +1,102 @@
+---
+import { SITE_TAGLINE, SITE_TITLE } from '../consts';
+import HeaderLink from './HeaderLink.astro';
+import ThemeToggle from './ThemeToggle.astro';
+---
+
+<header class="site-header">
+	<div class="site-header__inner">
+		<a class="site-brand" href="/">
+			<span class="site-brand__title">{SITE_TITLE}</span>
+			<span class="site-brand__tagline">{SITE_TAGLINE}</span>
+		</a>
+		<nav class="site-nav" aria-label="Primary">
+			<HeaderLink href="/">Home</HeaderLink>
+			<HeaderLink href="/blog">Archive</HeaderLink>
+		</nav>
+		<ThemeToggle />
+	</div>
+</header>
+<style>
+	.site-header {
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		padding: 1rem;
+		backdrop-filter: blur(18px);
+		background: color-mix(in srgb, var(--page) 82%, transparent);
+		border-bottom: 1px solid var(--surface-border);
+	}
+
+	.site-header__inner {
+		width: min(calc(100% - 1rem), var(--max-width));
+		margin: 0 auto;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		align-items: center;
+		gap: 1rem 1.5rem;
+	}
+
+	.site-brand {
+		display: inline-flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		text-decoration: none;
+	}
+
+	.site-brand__title {
+		font-size: 1.1rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.site-brand__tagline {
+		color: var(--text-muted);
+		font-size: 0.9rem;
+	}
+
+	.site-nav {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+	}
+
+	.site-nav :global(a) {
+		padding: 0.55rem 0.8rem;
+		border-radius: 999px;
+		text-decoration: none;
+		color: var(--text-muted);
+		transition:
+			color 180ms ease,
+			background-color 180ms ease;
+	}
+
+	.site-nav :global(a:hover),
+	.site-nav :global(a.active) {
+		color: var(--text-primary);
+		background: var(--surface);
+	}
+
+	@media (max-width: 860px) {
+		.site-header__inner {
+			grid-template-columns: 1fr auto;
+		}
+
+		.site-nav {
+			grid-column: 1 / -1;
+			justify-content: flex-start;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.site-header {
+			padding: 0.8rem;
+		}
+
+		.site-brand__tagline {
+			display: none;
+		}
+	}
+</style>
