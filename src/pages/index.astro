@@ -8,6 +8,10 @@ import { getVisibleBlogPosts } from '../utils/blog';
 const posts = getVisibleBlogPosts(await getCollection('blog'));
 const heroPost = posts[0];
 const latestPosts = posts.slice(1, 4);
+const basePath = import.meta.env.BASE_URL.endsWith('/')
+	? import.meta.env.BASE_URL
+	: `${import.meta.env.BASE_URL}/`;
+const withBase = (path: string) => new URL(path.replace(/^\//, ''), `https://codex.invalid${basePath}`).pathname;
 ---
 
 <SiteLayout title={SITE_TITLE} description={SITE_DESCRIPTION}>
@@ -20,8 +24,8 @@ const latestPosts = posts.slice(1, 4);
 						<h1>{heroPost.data.title}</h1>
 						<p class="hero__lede">{heroPost.data.description}</p>
 						<div class="hero__actions">
-							<a class="button" href={`/blog/${heroPost.id}/`}>Read the article</a>
-							<a class="button button--ghost" href="/blog">Open archive</a>
+							<a class="button" href={withBase(`/blog/${heroPost.id}/`)}>Read the article</a>
+							<a class="button button--ghost" href={withBase('/blog/')}>Open archive</a>
 						</div>
 					</>
 				)
@@ -46,7 +50,7 @@ const latestPosts = posts.slice(1, 4);
 						<p class="eyebrow">Latest</p>
 						<h2>More recent articles</h2>
 					</div>
-					<a class="section-link" href="/blog">View all posts</a>
+					<a class="section-link" href={withBase('/blog/')}>View all posts</a>
 				</section>
 
 				<div class="post-grid">
@@ -57,7 +61,7 @@ const latestPosts = posts.slice(1, 4);
 									<FormattedDate date={post.data.pubDate} />
 								</p>
 								<h3>
-									<a href={`/blog/${post.id}/`}>{post.data.title}</a>
+									<a href={withBase(`/blog/${post.id}/`)}>{post.data.title}</a>
 								</h3>
 								<p>{post.data.description}</p>
 								{post.data.tags.length > 0 && <ul class="tag-list">{post.data.tags.map((tag) => <li>{tag}</li>)}</ul>}

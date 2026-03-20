@@ -7,7 +7,8 @@ import remarkMermaid from './src/plugins/remark-mermaid.mjs';
 
 // https://astro.build/config
 export default defineConfig({
-	site: 'https://example.com',
+	site: 'https://theo-matzavinos.github.io',
+	base: '/dump',
 	integrations: [mdx(), sitemap()],
 	markdown: {
 		remarkPlugins: [remarkMermaid],

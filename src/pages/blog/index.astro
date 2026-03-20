@@ -6,6 +6,10 @@ import SiteLayout from '../../layouts/SiteLayout.astro';
 import { getVisibleBlogPosts } from '../../utils/blog';
 
 const posts = getVisibleBlogPosts(await getCollection('blog'));
+const basePath = import.meta.env.BASE_URL.endsWith('/')
+	? import.meta.env.BASE_URL
+	: `${import.meta.env.BASE_URL}/`;
+const withBase = (path: string) => new URL(path.replace(/^\//, ''), `https://codex.invalid${basePath}`).pathname;
 ---
 
 <SiteLayout title={`${SITE_TITLE} Archive`} description={SITE_DESCRIPTION}>
@@ -27,7 +31,7 @@ const posts = getVisibleBlogPosts(await getCollection('blog'));
 					</div>
 					<div>
 						<h2>
-							<a href={`/blog/${post.id}/`}>{post.data.title}</a>
+							<a href={withBase(`/blog/${post.id}/`)}>{post.data.title}</a>
 						</h2>
 						<p>{post.data.description}</p>
 					</div>

@@ -45,4 +45,12 @@ flowchart TD
 
 - Update site metadata in `src/consts.ts`
 - Adjust the design in `src/styles/global.css`
-- Replace `https://example.com` in `astro.config.mjs` with your real site URL before deploying
+
+## GitHub Pages
+
+This repository is configured as a GitHub Pages project site, so the published URL includes the repository name:
+
+- Site root: `https://theo-matzavinos.github.io/dump/`
+- Blog post: `https://theo-matzavinos.github.io/dump/blog/angular-dependency-injection/`
+
+If you open `https://theo-matzavinos.github.io/blog/...` instead, GitHub Pages will return a `404` because that path belongs to a user site root, not this project repository.
