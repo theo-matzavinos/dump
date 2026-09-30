@@ -1,7 +1,8 @@
 ---
-title: "Angular change detection, from triggers to signals"
-description: "A teaching-first guide to Angular change detection, with a practical mental model for Default, OnPush, async pipe, and signals."
+title: "Angular change detection, from notifications to DOM updates"
+description: "Understand Angular change detection by separating scheduling, view checking, signal dependencies, DOM updates, and browser painting."
 pubDate: "2026-04-28"
+updatedDate: "2026-09-30"
 tags:
   - angular
   - change-detection
@@ -9,396 +10,432 @@ tags:
   - performance
 ---
 
-Change detection is one of those Angular topics that people often learn as a bag of rules:
+A button changes a field and the UI updates. A timer changes the same field and the UI stays stale. Replacing an input object works, but mutating it does not—until another click makes the new value appear.
 
-- "`OnPush` is faster"
-- "do not mutate inputs"
-- "the `async` pipe fixes it"
-- "signals change everything"
+These are not unrelated Angular exceptions. They involve separate questions:
 
-Those rules are not useless, but on their own they are not a model. Without a model, teams end up cargo-culting optimizations, misreading bugs, and arguing about framework magic instead of understanding what Angular is doing.
+1. **Notification:** what tells Angular there is work to do?
+2. **Check:** which views and bindings need evaluation?
+3. **Update:** which changed binding results need to be written to the DOM?
 
-This article uses one central idea:
+The browser then decides when to perform rendering work and display the result. Updating application state, updating the DOM, and painting pixels are different milestones.
 
-Angular change detection gets much easier once you separate **trigger**, **check**, and **update**.
+This article follows that sequence, using current Angular first and then explaining the Zone.js-based model still found in existing applications.
 
-- A **trigger** is what causes Angular to start a change-detection pass, or to mark work that should be checked.
-- A **check** is Angular evaluating bindings in the relevant views.
-- An **update** is Angular synchronizing the DOM where a binding result changed.
+## Contents
 
-That distinction is what makes `Default`, `OnPush`, `async` pipe, and signals feel coherent instead of magical.
+1. [Notification, check, update, paint](#notification-check-update-paint)
+2. [Current defaults and independent choices](#current-defaults-and-independent-choices)
+3. [OnPush versus eager checking](#onpush-versus-eager-checking)
+4. [Why a timer can leave the UI stale](#why-a-timer-can-leave-the-ui-stale)
+5. [Input replacement versus mutation](#input-replacement-versus-mutation)
+6. [Signals track dependencies, not deep mutations](#signals-track-dependencies-not-deep-mutations)
+7. [Observables and AsyncPipe](#observables-and-asyncpipe)
+8. [Marking versus checking immediately](#marking-versus-checking-immediately)
+9. [Where Zone.js fits](#where-zonejs-fits)
+10. [A debugging and performance checklist](#a-debugging-and-performance-checklist)
 
-## 1. The problem change detection solves
+## Notification, check, update, paint
 
-All frontend frameworks have the same basic problem.
+Changing a JavaScript variable does not automatically change the DOM:
 
-Your application state changes over time:
+```ts
+let count = 0;
+count += 1;
+```
 
-- a user clicks a button
-- an HTTP request resolves
-- a timer fires
-- a form control changes
-
-But the DOM does not automatically know that your application state changed. Something has to connect "state changed in JavaScript" to "the UI should now show something different".
-
-That "something" is change detection.
-
-In plain language:
-
-> Change detection is the framework's process for noticing that application state may have changed, checking what the UI depends on, and updating the DOM where needed.
-
-That is the problem every framework needs to solve. The interesting part is how each framework chooses to solve it.
-
-## 2. One short detour: different frameworks, different tradeoffs
-
-At a very high level, UI frameworks tend to lean toward one of these families:
-
-- **Dirty checking**: keep checking values until you notice something changed.
-- **Virtual DOM diffing**: re-run render logic and compare the new result with the old one.
-- **Fine-grained reactivity**: track exact dependencies and update only the consumers of those dependencies.
-
-Angular has moved across that landscape in its own way.
-
-- The traditional Angular model is heavily associated with zone-driven change detection.
-- `OnPush` lets Angular skip more work by being more selective about which subtrees to check.
-- Signals move Angular toward more explicit dependency tracking.
-
-That is enough cross-framework context for this article. The rest is about how Angular behaves in practice.
-
-## 3. The core Angular mental model
-
-Here is the model to keep in your head:
+Something must connect that state to a displayed value. Angular does this through view synchronization, usually called **change detection**.
 
 ```mermaid
 flowchart LR
-    A[Something changes] --> B[Trigger]
-    B --> C[Angular schedules or runs<br/>change detection]
-    C --> D[Angular checks relevant<br/>views and bindings]
-    D --> E[DOM updates only where<br/>binding values changed]
+    S[Application state changes] --> N[Angular receives a notification]
+    N --> C[Schedule synchronization and check relevant views]
+    C --> U[Write changed binding results to the DOM]
+    U --> P[Browser rendering opportunity]
 ```
 
-That breaks down into four steps:
+The first arrow is not automatic for every state change. A plain assignment inside an arbitrary callback may provide no notification.
 
-1. Something in the app changes.
-2. Angular gets a **trigger** to do work.
-3. Angular decides which views should be **checked**.
-4. Angular **updates** the DOM where binding results changed.
+The later arrows also need qualifications:
 
-That is the anchor for the rest of the article.
+- Angular can receive several notifications before one synchronization pass; do not assume one notification means one separate full-tree check.
+- A check can evaluate bindings without changing any DOM value.
+- Angular normally compares a binding's new result with its previously recorded result, not with a fresh inspection of the DOM.
+- DOM writes do not force the browser to paint immediately.
 
-Two distinctions matter immediately.
+A component **view** contains the template work Angular can evaluate, including bindings such as `{{ count }}`. Checking a view is not equivalent to discarding and rebuilding its HTML.
 
-First, **a trigger is not the same thing as a DOM update**. Angular can run a change-detection pass even when almost nothing visibly changes.
+For browser scheduling details, see [JavaScript engines and runtimes](/dump/blog/javascript-engines-and-runtimes/). Here, the important distinction is that Angular chooses synchronization work while the browser schedules JavaScript and rendering opportunities.
 
-Second, **a check is not the same thing as "rerender everything"**. Angular evaluates bindings in views that are part of the current pass, and then updates the DOM only where those evaluated values differ from what the DOM currently reflects.
+## Current defaults and independent choices
 
-If you keep those distinctions separate, a lot of Angular behavior becomes much easier to reason about.
+**Version baseline:** the APIs and behavior below were checked against Angular v22.2.1.
 
-## 4. Default change detection
+| Version boundary | Change                                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| Angular v20      | Zoneless change detection is available through `provideZonelessChangeDetection()`                               |
+| Angular v21+     | Zoneless is the default unless the application opts into Zone.js-based change detection                         |
+| Angular v22+     | `OnPush` is the default component strategy; `Eager` names broad checking, and `Default` is its deprecated alias |
 
-The default Angular model is intentionally convenient.
+In older Angular versions, articles often use “default change detection” to mean both Zone.js scheduling and broad component checking. Those are independent concerns, not one switch.
 
-Angular uses Zone.js to patch common async boundaries in the browser and framework runtime. Conceptually, that means Angular can notice when work like this completes:
+| Concern             | Choices or mechanisms                                               | What it controls                                          |
+| ------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
+| Scheduling          | Angular notifications; Zone.js integration in zone-based apps       | When synchronization is requested                         |
+| View checking       | `OnPush` or `Eager` (historically `Default`)                        | Whether a reached component view is eligible for checking |
+| Dependency tracking | Signals read by templates, `computed`, and other reactive consumers | Which consumers depend on reactive state                  |
 
-- DOM events
-- timers such as `setTimeout`
-- promise resolution
-- many HTTP-related async completions
+Signals work **with** checking strategies. Zoneless does not mean “signals only,” and `OnPush` does not mean “no Zone.js.”
 
-After one of those boundaries, Angular runs a change-detection cycle.
+### Notifications in a zoneless application
 
-In the default strategy, Angular checks broadly through the component tree. The useful mental model is not "Angular rerenders the whole app". A better model is:
+Angular's documented notification surfaces include:
 
-> Angular walks the relevant tree, evaluates bindings, and updates the DOM only where evaluated values changed.
+- bound template and host listeners;
+- changing a signal read by a template;
+- `ChangeDetectorRef.markForCheck()`, including calls made by `AsyncPipe`;
+- `ComponentRef.setInput()` for dynamically created components;
+- attaching a view that has already been marked dirty.
 
-Here is a simple example:
+A changed template-bound input also makes its receiving view eligible for checking while the parent view is being evaluated. Replacing an object in an arbitrary callback does not, by itself, arrange for that parent evaluation to happen.
+
+The practical question is **“what notified Angular?”**, not merely **“what async API completed?”**
+
+## OnPush versus eager checking
+
+`OnPush` lets Angular skip component views that have no reason to refresh. Reasons include changed template-bound inputs, an Angular-handled event in the view or its descendants, explicit marking, and changed signal dependencies read by the template.
+
+`Eager` views are checked eagerly when traversal reaches them. It does not mean a zoneless application watches every ordinary assignment or automatically schedules work after every timer.
+
+Two boundaries matter:
+
+- A clean `OnPush` boundary can prevent broad checking of a subtree.
+- Checking a parent does not force every nested `OnPush` child to refresh. Each child still has its own eligibility conditions.
+
+Angular can also traverse ancestors to reach a descendant needing refresh without reevaluating every ancestor's bindings. Do not treat “traversed” and “checked” as exact synonyms.
+
+### A local event can update a plain field
 
 ```ts
-import { Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component } from "@angular/core";
 
 @Component({
-  selector: 'app-counter',
-  template: `
-    <button (click)="increment()">Clicked {{ count }} times</button>
-    <p>Status: {{ count > 5 ? 'busy' : 'idle' }}</p>
-  `,
+  selector: "click-counter",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: ` <button (click)="increment()">Clicked {{ count }} times</button> `,
 })
-export class CounterComponent {
+export class ClickCounter {
   count = 0;
 
-  increment() {
+  increment(): void {
     this.count += 1;
   }
 }
 ```
 
-When the button is clicked:
+The field is not a signal. This still works because Angular handles the bound listener and has a reason to check the view after the event.
 
-- the click event is a trigger surface
-- Angular runs change detection
-- Angular checks the bindings that read `count`
-- the DOM updates where those binding results changed
+Explicit `OnPush` declarations in these examples make the intended strategy visible and preserve it when the examples are used with pre-v22 Angular.
 
-That feels straightforward because the component uses the default strategy and the state mutation happened during an Angular-handled event.
+An event in a descendant can also make `OnPush` ancestors eligible for checking. It does not make every unrelated `OnPush` sibling eligible.
 
-## 5. The distinction that unstucks people: trigger vs check
+## Why a timer can leave the UI stale
 
-This is the hinge point of the whole topic.
-
-When people say "Angular ran change detection", they often mentally collapse three separate ideas into one:
-
-- something triggered a pass
-- Angular checked some part of the tree
-- the DOM visibly changed
-
-Those are related, but they are not the same thing.
-
-A click can trigger a pass even if no meaningful state changed. A promise resolution can trigger a pass that ends up updating one text node. A timer can trigger a pass that checks a large part of the tree and updates nothing.
-
-That is why performance conversations need more precision.
-
-If a page feels expensive, the problem might be:
-
-- checks are happening too often
-- checks are traversing too much of the tree
-- bindings are expensive to evaluate
-- the DOM is being updated more than necessary
-
-Those are different problems, and they do not all have the same solution.
-
-This is also why "`OnPush` makes Angular fast" is too vague to be useful. `OnPush` does not change what a changed binding means. It changes how selectively Angular chooses what to check.
-
-## 6. `OnPush`: what it actually changes
-
-`ChangeDetectionStrategy.OnPush` is best understood as a more selective checking policy.
-
-It tells Angular:
-
-> Skip this component subtree unless there is a reason to check it.
-
-The main reasons Angular will check an `OnPush` subtree are:
-
-- a new input arrives through template binding
-- an event originates from that component or somewhere inside its subtree
-- an observable or promise consumed by the `async` pipe emits
-- code explicitly uses change-detection APIs such as `markForCheck()`
-
-That leads to a more selective model than default change detection.
-
-```mermaid
-flowchart TD
-    A[App tree] --> B[Default subtree]
-    A --> C[OnPush subtree]
-    B --> D[Checked when Angular runs]
-    C --> E[Checked only when relevant trigger reaches it]
-```
-
-This is the key framing:
-
-- `Default` says "when Angular runs a pass, check broadly"
-- `OnPush` says "when Angular runs a pass, skip this subtree unless it has a relevant reason to be checked"
-
-That is more accurate than saying "`OnPush` only updates on input reference changes". New inputs matter, but they are not the only trigger surface that matters in real applications.
-
-## 7. Why `OnPush` feels weird at first
-
-Most `OnPush` confusion comes from three things:
-
-- reference semantics
-- subtree boundaries
-- misunderstanding where the trigger came from
-
-### Mutation vs replacement
-
-This is the classic pitfall.
+Compare two delayed updates in a zoneless application:
 
 ```ts
-import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, signal } from "@angular/core";
 
 @Component({
-  selector: 'user-card',
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `<p>{{ user.name }}</p>`,
-})
-export class UserCardComponent {
-  @Input() user!: { name: string };
-}
-```
-
-Now imagine the **parent** holds the `user` object and passes it to that child:
-
-```ts
-this.user.name = 'Maria';
-```
-
-That mutation happens in the parent component, not inside the `OnPush` child. For `OnPush` inputs, Angular effectively cares whether the new input value is equal to the previous one. For objects and arrays, that usually comes down to reference equality: if the parent keeps passing the same object reference, Angular does not see a new input for that child.
-
-The usual fix is to replace, not mutate:
-
-```ts
-this.user = {
-  ...this.user,
-  name: 'Maria',
-};
-```
-
-Again, that replacement happens in the parent. Now the child receives a new reference, and Angular has a reason to check that `OnPush` boundary.
-
-### Why a local click still updates an `OnPush` component
-
-Another common surprise is this:
-
-```ts
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-
-@Component({
-  selector: 'app-toggle',
+  selector: "delayed-counter",
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <button (click)="toggle()">Toggle</button>
-    <p>{{ open ? 'Open' : 'Closed' }}</p>
+    <button (click)="incrementPlainLater()">Increment plain field later</button>
+    <button (click)="incrementSignalLater()">Increment signal later</button>
+    <p>Plain: {{ plainCount }}</p>
+    <p>Signal: {{ signalCount() }}</p>
   `,
 })
-export class ToggleComponent {
-  open = false;
+export class DelayedCounter {
+  plainCount = 0;
+  readonly signalCount = signal(0);
 
-  toggle() {
-    this.open = !this.open;
+  incrementPlainLater(): void {
+    setTimeout(() => {
+      this.plainCount += 1;
+    }, 1000);
+  }
+
+  incrementSignalLater(): void {
+    setTimeout(() => {
+      this.signalCount.update((count) => count + 1);
+    }, 1000);
   }
 }
 ```
 
-This still updates correctly.
+Assuming no other notifications or forced checks:
 
-Why? Because the event originated inside the component's own subtree. `OnPush` does not mean "ignore local state forever". It means Angular needs a relevant reason to check the subtree, and a local event is one of those reasons.
+| Action                            | State after the timer       | Displayed result                    |
+| --------------------------------- | --------------------------- | ----------------------------------- |
+| Click the plain-field button once | `plainCount` becomes `1`    | The paragraph still shows `0`       |
+| Click the signal button once      | `signalCount()` becomes `1` | The signal paragraph updates to `1` |
 
-### Why `async` pipe often works when manual subscription glue does not
+The initial click notifies Angular **before** the delayed mutation. That does not grant the later timer callback permanent change-detection integration.
 
-The `async` pipe matters because it is not only a subscription convenience. It is also a change-detection integration point.
+The signal write supplies a new notification because the template is a tracked consumer. Another later local event or signal notification can make the plain field's already-changed value visible too. That explains many “it updates only when I click somewhere” reports.
+
+These one-shot timers demonstrate scheduling, not a background-job design. Long-lived timers and subscriptions still need cleanup when their owning feature is destroyed.
+
+## Input replacement versus mutation
+
+Here is a parent and child in one file:
 
 ```ts
-import { AsyncPipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { user$ } from './state';
+import { ChangeDetectionStrategy, Component, input } from "@angular/core";
+
+interface User {
+  name: string;
+}
 
 @Component({
-  selector: 'user-name',
-  imports: [AsyncPipe],
+  selector: "user-card",
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `<p>{{ (user$ | async)?.name }}</p>`,
+  template: `<p>{{ user().name }}</p>`,
 })
-export class UserNameComponent {
-  user$ = user$;
+export class UserCard {
+  readonly user = input.required<User>();
+}
+
+@Component({
+  selector: "user-page",
+  imports: [UserCard],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <button (click)="mutate()">Mutate name</button>
+    <button (click)="replace()">Replace user</button>
+    <user-card [user]="user" />
+  `,
+})
+export class UserPage {
+  user: User = { name: "Alice" };
+
+  mutate(): void {
+    this.user.name = "Maria";
+  }
+
+  replace(): void {
+    this.user = { ...this.user, name: "Maria" };
+  }
 }
 ```
 
-When the observable emits, the `async` pipe marks the component to be checked. That is why this pattern works naturally with `OnPush`.
+After **Mutate name**, the parent is checked because it handled the event. But the child still receives the same object reference. That does not constitute a changed input, so the clean `OnPush` child can remain skipped and continue displaying `Alice`.
 
-By contrast, manual subscriptions can go wrong when they update component state in ways that do not properly mark the relevant `OnPush` boundary, or when they spread change-detection concerns across lifecycle hooks and services.
+After **Replace user**, the parent evaluates a new reference for the binding. The child receives a changed input and displays `Maria`.
 
-That does not make manual subscriptions forbidden. It means the `async` pipe is often the cleaner trigger surface for template-driven consumption.
+The important distinction is not “Angular forbids mutation.” It is that a mutation does not provide a new input value at this boundary. If another reason later causes the child to be checked, it can display the mutated object's current contents.
 
-### Why "it updated once but not later" usually has a boring explanation
+Using a signal-based input does not turn the incoming object into a deeply observed proxy. Likewise, direct TypeScript assignment to a child's ordinary input property is not equivalent to Angular updating a template binding. For dynamically created components, use the framework's `ComponentRef.setInput()` integration rather than assuming a property assignment will notify it.
 
-When an `OnPush` component behaves inconsistently, the explanation is usually one of these:
+## Signals track dependencies, not deep mutations
 
-- the first update came from a local event, but later updates relied on mutating the same input reference
-- an observable emitted through `async` pipe in one version, but later code moved to a manual subscription path
-- the expected trigger happened outside the subtree the developer assumed Angular would check
-
-In other words, the weirdness is usually not random. It is a mismatch between your mental model and Angular's trigger or subtree rules.
-
-## 8. Signals: a more explicit model
-
-Signals introduce a more explicit reactive model for state and derivation.
-
-At a high level:
-
-- `signal()` holds state
-- `computed()` derives state from other signals
-- `effect()` runs side effects when signal dependencies change
-
-Here is the simplest example:
+Signals describe reactive state and derived values:
 
 ```ts
-import { Component, computed, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, signal } from "@angular/core";
 
 @Component({
-  selector: 'cart-summary',
+  selector: "cart-summary",
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <p>Items: {{ itemCount() }}</p>
     <p>Total: {{ total() }}</p>
     <button (click)="addItem()">Add item</button>
   `,
 })
-export class CartSummaryComponent {
+export class CartSummary {
   readonly prices = signal([10, 15]);
   readonly itemCount = computed(() => this.prices().length);
-  readonly total = computed(() => this.prices().reduce((sum, price) => sum + price, 0));
+  readonly total = computed(() => {
+    let total = 0;
 
-  addItem() {
+    for (const price of this.prices()) {
+      total += price;
+    }
+
+    return total;
+  });
+
+  addItem(): void {
     this.prices.update((prices) => [...prices, 20]);
   }
 }
 ```
 
-The important part is not the syntax. The important part is the dependency model.
+The initial values are two items and a total of `25`. Adding an item creates a new array, invalidates the dependent computations, and the next synchronization displays three items and `45`.
 
-When code reads a signal, Angular can track that read. When the signal changes, Angular knows which consumers depend on it.
+### Tracking needs a reactive context
 
-That is why signals feel different from the older "something async happened, so Angular should go check" model.
+Angular tracks signal reads while evaluating a **reactive consumer**, such as a template, `computed()`, or `effect()`. Reading a signal in arbitrary ordinary code does not automatically subscribe that code to future changes.
 
-Angular's signals guide also makes an important point about `effect()`: it is mainly for side effects, not ordinary state propagation. If one value is derived from another value, `computed()` is usually the right tool.
+Dependencies are dynamic: a computation tracks the signals actually read during its latest evaluation, not every signal mentioned somewhere in the function. Tracking is also synchronous; reads after an `await` are not part of the preceding reactive context.
 
-## 9. How signals change the mental model
+### Computed values are lazy and cached
 
-Signals do not mean you should forget everything about change detection. They do change the mental center of gravity.
+A `computed()` derivation runs when its value is needed, not immediately every time a source signal changes. Angular caches the result. A dependency change invalidates that cache; a later read recomputes it.
 
-With the older zone-driven model, the thought process is often:
+For state derived from other state, use `computed()` rather than an `effect()` that copies a value into another writable signal. Effects are for side effects such as logging or integration with non-reactive APIs, not the default tool for state propagation.
 
-> Something async happened, so Angular should run a check.
+### A signal write still has equality semantics
 
-With signals, the thought process is closer to:
+Signals use `Object.is()` equality by default. Mutating the value without changing its reference does not notify consumers:
 
-> This exact dependency changed, so the consumers of that dependency need to react.
+```ts
+import { signal } from "@angular/core";
 
-That gives Angular more explicit information.
+const user = signal({ name: "Alice" });
 
-```mermaid
-flowchart LR
-    A[count signal] --> B[computed total]
-    A --> C[template read]
-    B --> C
-    D[signal update] --> A
+user().name = "Maria"; // Mutates the object, but sends no signal notification.
+user.set(user()); // Same reference: still no notification under default equality.
+
+user.update((current) => ({ ...current, name: "Maria" })); // New reference.
 ```
 
-That does **not** mean:
+Custom equality functions can change whether a write counts as a change. Readonly signal views prevent writes through the signal API, not deep mutation of their returned objects.
 
-- Zone.js is obsolete in every app
-- signals remove all need to understand component boundaries
-- signals are automatically the right answer for every state problem
+Finally, signals do not give each interpolation its own independent DOM-patching engine. Angular tracks consumers and uses those dependencies to decide what view work is needed. Template bindings still participate in change detection.
 
-It means signals give Angular a more explicit dependency graph to work with. That can improve predictability and reduce unnecessary checking in the right circumstances.
+## Observables and AsyncPipe
 
-There is also an important practical detail for teams already using `OnPush`: when an `OnPush` template reads a signal, Angular tracks that signal as a dependency of the component. When the signal changes, Angular marks that component so it can be updated on the next change-detection run.
+An observable emission is not, by itself, a template notification. `AsyncPipe` provides that integration:
 
-## 10. A compact comparison
+```ts
+import { AsyncPipe } from "@angular/common";
+import { ChangeDetectionStrategy, Component } from "@angular/core";
+import { interval } from "rxjs";
 
-| Model | Main idea | Typical trigger style | What developers usually need to watch |
-| --- | --- | --- | --- |
-| `Default` | Broad tree checking during Angular passes | Zone-driven async boundaries such as events, timers, promises | Too many broad checks in large trees |
-| `OnPush` | Selective subtree checking | New inputs, local subtree events, `async` pipe emissions, manual marking | Mutating inputs, misunderstanding subtree boundaries |
-| Signals | Explicit dependency tracking | Signal writes and derived recomputation | Using `effect()` for ordinary state flow, mixing models carelessly |
+@Component({
+  selector: "elapsed-counter",
+  imports: [AsyncPipe],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `<p>Latest tick: {{ ticks$ | async }}</p>`,
+})
+export class ElapsedCounter {
+  readonly ticks$ = interval(1000);
+}
+```
 
-## 11. Be careful with `effect()`
+The template initially has no emitted tick; after one second it displays `0`, then `1`, and so on. On asynchronous emissions, the pipe marks its containing view for checking. It also manages subscription cleanup when the view is destroyed and switches subscriptions if the supplied source changes.
 
-If you are deriving one value from another, reach for `computed()`, not `effect()`. Effects are better for side effects such as logging, local storage synchronization, or integration with APIs outside Angular's reactive template model.
+A manual subscription that assigns `this.tick = value` to a plain field does not provide the same notification automatically. Use a template-read signal, or explicitly mark the view after assigning the field. The subscription also needs an owner and cleanup, for example through `takeUntilDestroyed()`.
 
-## 12. Conclusion
+`AsyncPipe` also supports promises; a promise resolves once rather than emitting a continuing sequence.
 
-If you only keep four ideas from this article, keep these:
+A useful alternative for component code that needs reactive observable values is `toSignal()` from `@angular/core/rxjs-interop`. It manages the subscription and exposes a signal. Account for its injection-context and initial-value requirements, and create it once rather than recreating subscriptions during template evaluation.
 
-- Change detection is a **trigger, check, update** problem.
-- `Default` and `OnPush` mainly differ in **how broadly Angular checks**.
-- Most `OnPush` surprises come from **references, subtree boundaries, and trigger origin**.
-- Signals shift Angular toward **more explicit dependency tracking**, which is why they often feel easier to reason about.
+None of these APIs makes the browser paint immediately on receipt of a value. They connect asynchronous state to Angular's synchronization model.
+
+## Marking versus checking immediately
+
+Two similarly named APIs do different jobs:
+
+| API               | Meaning                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `markForCheck()`  | Mark a view for a future synchronization pass; it is a zoneless notification surface   |
+| `detectChanges()` | Perform a local check of the view and its children according to change-detection rules |
+
+For a normal callback updating a plain field, marking is usually the intended integration:
+
+```ts
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, inject } from "@angular/core";
+
+@Component({
+  selector: "marked-counter",
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <button (click)="incrementLater()">Increment later</button>
+    <p>{{ count }}</p>
+  `,
+})
+export class MarkedCounter {
+  private readonly changeDetector = inject(ChangeDetectorRef);
+  count = 0;
+
+  incrementLater(): void {
+    setTimeout(() => {
+      this.count += 1;
+      this.changeDetector.markForCheck();
+    }, 1000);
+  }
+}
+```
+
+The timer now supplies the missing notification. Notice that `ChangeDetectorRef` is injected in the field initializer, not inside the timer callback.
+
+`detectChanges()` is not a stronger version to sprinkle everywhere. It changes timing by doing local work immediately. One deliberate use is combining it with a detached view for explicitly controlled refreshes. Detached views are excluded from normal traversal, even when marked; that is an advanced ownership decision, not the starting fix for stale state.
+
+## Where Zone.js fits
+
+In a Zone.js-based application, patched asynchronous APIs give Angular broad hints that application state **may** have changed. Angular's zone integration can arrange synchronization after relevant activity inside the Angular zone.
+
+This is why older eager/default components often updated after a timer assigned a plain field, even though the application supplied no explicit dependency notification.
+
+That model needs limits:
+
+- Zone.js is not a dependency graph and does not know whether a field actually changed.
+- Not every asynchronous API is patched, and work outside the Angular zone does not behave like work inside it.
+- Coalescing and scheduling configuration affect how activity maps to passes; “every promise causes a full render” is inaccurate.
+- Zone-driven scheduling does not remove clean `OnPush` boundaries. A timer can cause a pass without making its `OnPush` component eligible for refresh.
+
+`NgZone.runOutsideAngular()` can keep high-frequency work from repeatedly invoking zone-based synchronization. Reentering with `NgZone.run()` matters for zone integration, but it does not substitute for correct `OnPush` marking. In zoneless applications, use the documented notification mechanisms; entering a zone is not the missing notification.
+
+Signals, `AsyncPipe`, and explicit marking work in zone-based applications too. Migration is not “rewrite every field as a signal”; it is making the application's update paths supply appropriate notifications.
+
+Reactive forms deserve attention during that migration: programmatic changes such as `setValue()` update form state and emit form observables, but do not automatically schedule zoneless component checking. Connect template-relevant form state to a notification mechanism, rather than assuming every form-model operation is equivalent to a bound user event.
+
+## A debugging and performance checklist
+
+For a stale UI, follow the value through the full chain:
+
+1. **Did the state really change?** Inspect the owning object and distinguish it from another service or component instance.
+2. **What notified Angular?** Identify a bound listener, template-read signal write, `AsyncPipe`, input integration, or explicit mark. A timer completing is not sufficient evidence in a zoneless app.
+3. **Which view is eligible?** Check `OnPush` boundaries and whether the input reference actually changed.
+4. **Did the template establish the dependency?** A signal read in unrelated application code does not make the template a consumer. Deep mutation does not notify by itself.
+5. **Is the view still attached and alive?** Detached views and destroyed owners do not participate in ordinary updates.
+6. **Did the evaluated binding result change?** A new check does not guarantee a new DOM write.
+7. **Are you confusing DOM updates with paint?** Long-running JavaScript can delay visible rendering after state has already changed.
+
+For performance, measure separate costs instead of assuming `OnPush` solves them all:
+
+| Observed cost                   | What to investigate                                                    |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| Too many synchronization passes | Notification frequency, high-frequency events, zone activity, batching |
+| Too much view evaluation        | Checking boundaries and which consumers are marked                     |
+| Expensive binding work          | Repeated computations, data size, suitable cached derivations          |
+| Expensive DOM/layout work       | Structural changes, large rendered lists, layout-triggering code       |
+| Long main-thread execution      | CPU work, chunking, or workers—not just checking strategy              |
+
+Use Angular DevTools and browser performance profiles on the actual interaction. A cheap check that changes nothing is not automatically the bottleneck.
+
+In zoneless tests, exercise the real update path and allow Angular to synchronize, for example with `await fixture.whenStable()`. Calling `fixture.detectChanges()` after every assignment can make a test pass while hiding the missing notification that production needs. Deliberate local checks still have their uses; they should not replace testing the scheduling contract.
+
+## Takeaways
+
+- Notification, view checking, DOM updates, and browser painting are separate steps.
+- Zoneless scheduling, `OnPush`, and signals address different concerns and work together.
+- A local bound event can refresh a plain field; a later arbitrary callback needs its own integration.
+- Replacing an input reference and deeply mutating an existing object are different operations.
+- Signals track synchronous reactive reads and use equality to decide whether writes notify consumers.
+- `AsyncPipe` integrates emissions with checking; manual subscriptions need intentional notification and cleanup.
+- Mark for a future pass when that is what you need; do not force immediate checks by habit.
+
+## Sources and further reading
+
+- [Angular: zoneless defaults and notification requirements](https://angular.dev/guide/zoneless)
+- [Angular: skipping component subtrees](https://angular.dev/best-practices/skipping-subtrees)
+- [Angular: signals, reactive contexts, and equality](https://angular.dev/guide/signals)
+- [Angular: AsyncPipe](https://angular.dev/api/common/AsyncPipe)
+- [Angular: ChangeDetectorRef](https://angular.dev/api/core/ChangeDetectorRef)
+- [Angular: RxJS interop with signals](https://angular.dev/ecosystem/rxjs-interop)
+- [Angular v22.2.1: OnPush default, Eager, and the deprecated Default alias](https://github.com/angular/angular/blob/fb7711f87d293ba1a282f21d0e9c1ef651c1b343/packages/core/src/change_detection/constants.ts)
