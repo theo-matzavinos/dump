@@ -1,58 +1,63 @@
-<button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme">
-	<span class="theme-toggle__label">Theme</span>
-	<span class="theme-toggle__value" data-theme-toggle-value>Light</span>
+<button class="theme-toggle" type="button" data-theme-toggle aria-label="Use light theme" title="Use light theme">
+	<svg class="theme-toggle__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+		<g class="theme-toggle__sun">
+			<circle cx="12" cy="12" r="4" />
+			<path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+		</g>
+		<path class="theme-toggle__moon" d="M20.8 13a9 9 0 0 1-9.8-9.8A9 9 0 1 0 20.8 13Z" />
+	</svg>
 </button>
 
 <script>
-	const storageKey = 'theme-preference';
 	type Theme = 'light' | 'dark';
 
-	const getPreferredTheme = (): Theme => {
-		const stored = localStorage.getItem(storageKey);
-		if (stored === 'light' || stored === 'dark') {
-			return stored;
+	const syncButtons = (theme: Theme) => {
+		let label = 'Use light theme';
+		if (theme === 'light') {
+			label = 'Use dark theme';
 		}
 
-		return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+		for (const button of document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]')) {
+			button.setAttribute('aria-label', label);
+			button.setAttribute('title', label);
+		}
 	};
 
-	const syncButtons = (theme: Theme) => {
-		document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]').forEach((button) => {
-			button.setAttribute('aria-pressed', String(theme === 'dark'));
-			const value = button.querySelector('[data-theme-toggle-value]');
-			if (value) {
-				value.textContent = theme === 'dark' ? 'Dark' : 'Light';
-			}
-		});
-	};
-
-	const applyTheme = (theme: Theme, persist = true) => {
+	const applyTheme = (theme: Theme) => {
 		document.documentElement.dataset.theme = theme;
 		document.documentElement.style.colorScheme = theme;
 		syncButtons(theme);
 
-		if (persist) {
-			localStorage.setItem(storageKey, theme);
+		try {
+			localStorage.setItem('theme-preference', theme);
+		} catch {
+			// Switching themes still works when browser storage is unavailable.
 		}
 
 		document.dispatchEvent(new CustomEvent('theme-changed', { detail: theme }));
 	};
 
 	const wireThemeToggle = () => {
-		const theme = (document.documentElement.dataset.theme as Theme | undefined) || getPreferredTheme();
-		applyTheme(theme, false);
+		let theme: Theme = 'dark';
+		if (document.documentElement.dataset.theme === 'light') {
+			theme = 'light';
+		}
+		syncButtons(theme);
 
-		document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]').forEach((button) => {
+		for (const button of document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]')) {
 			if (button.dataset.bound === 'true') {
-				return;
+				continue;
 			}
 
 			button.dataset.bound = 'true';
 			button.addEventListener('click', () => {
-				const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+				let nextTheme: Theme = 'light';
+				if (document.documentElement.dataset.theme === 'light') {
+					nextTheme = 'dark';
+				}
 				applyTheme(nextTheme);
 			});
-		});
+		}
 	};
 
 	wireThemeToggle();
@@ -63,33 +68,34 @@
 	.theme-toggle {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.65rem;
-		padding: 0.6rem 0.9rem;
-		border: 1px solid var(--surface-border);
-		border-radius: 999px;
-		background: var(--surface);
+		justify-content: center;
+		flex: none;
+		width: 44px;
+		height: 44px;
+		padding: 0;
+		border: 0;
+		border-radius: 0.35rem;
+		background: transparent;
 		color: var(--text-primary);
-		font: inherit;
 		cursor: pointer;
-		transition:
-			transform 180ms ease,
-			border-color 180ms ease,
-			background-color 180ms ease;
+		transition: background-color 160ms ease, color 160ms ease;
 	}
 
 	.theme-toggle:hover {
-		transform: translateY(-1px);
-		border-color: var(--accent);
+		color: var(--accent);
+		background: var(--accent-soft);
 	}
 
-	.theme-toggle__label {
-		color: var(--text-muted);
-		font-size: 0.8rem;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
+	.theme-toggle__moon {
+		display: none;
 	}
 
-	.theme-toggle__value {
-		font-weight: 700;
+	:global([data-theme="light"]) .theme-toggle__sun {
+		display: none;
 	}
+
+	:global([data-theme="light"]) .theme-toggle__moon {
+		display: block;
+	}
+
 </style>

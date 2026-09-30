@@ -26,21 +26,17 @@ const { title, description, image = FallbackImage } = Astro.props;
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <script is:inline>
+	let theme = 'dark';
 	try {
 		const storedTheme = localStorage.getItem('theme-preference');
-		const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-		const theme =
-			storedTheme === 'light' || storedTheme === 'dark'
-				? storedTheme
-				: systemPrefersDark
-					? 'dark'
-					: 'light';
-		document.documentElement.dataset.theme = theme;
-		document.documentElement.style.colorScheme = theme;
+		if (storedTheme === 'light' || storedTheme === 'dark') {
+			theme = storedTheme;
+		}
 	} catch {
-		document.documentElement.dataset.theme = 'light';
-		document.documentElement.style.colorScheme = 'light';
+		// A saved preference is optional; dark mode works without storage.
 	}
+	document.documentElement.dataset.theme = theme;
+	document.documentElement.style.colorScheme = theme;
 </script>
 <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
 <link rel="icon" href={withBase('/favicon.ico')} />

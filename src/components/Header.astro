@@ -1,107 +1,58 @@
 ---
-import { SITE_TAGLINE, SITE_TITLE } from '../consts';
-import HeaderLink from './HeaderLink.astro';
 import ThemeToggle from './ThemeToggle.astro';
 
-const basePath = import.meta.env.BASE_URL.endsWith('/')
-	? import.meta.env.BASE_URL
-	: `${import.meta.env.BASE_URL}/`;
-const homeHref = new URL('.', `https://codex.invalid${basePath}`).pathname;
---- 
+interface Props {
+	backToIndex: boolean;
+}
+
+const { backToIndex } = Astro.props;
+const indexHref = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+---
 
 <header class="site-header">
 	<div class="site-header__inner">
-		<a class="site-brand" href={homeHref}>
-			<span class="site-brand__title">{SITE_TITLE}</span>
-			<span class="site-brand__tagline">{SITE_TAGLINE}</span>
-		</a>
-		<nav class="site-nav" aria-label="Primary">
-			<HeaderLink href="/">Home</HeaderLink>
-			<HeaderLink href="/blog">Archive</HeaderLink>
-		</nav>
+		{
+			backToIndex && (
+				<nav aria-label="Article navigation">
+					<a class="back-link" href={indexHref}>All articles</a>
+				</nav>
+			)
+		}
 		<ThemeToggle />
 	</div>
 </header>
+
 <style>
 	.site-header {
 		position: sticky;
 		top: 0;
 		z-index: 20;
-		padding: 1rem;
-		backdrop-filter: blur(18px);
-		background: color-mix(in srgb, var(--page) 82%, transparent);
-		border-bottom: 1px solid var(--surface-border);
+		background: var(--page);
 	}
 
 	.site-header__inner {
-		width: min(calc(100% - 1rem), var(--max-width));
-		margin: 0 auto;
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto auto;
-		align-items: center;
-		gap: 1rem 1.5rem;
-	}
-
-	.site-brand {
-		display: inline-flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		text-decoration: none;
-	}
-
-	.site-brand__title {
-		font-size: 1.1rem;
-		font-weight: 700;
-		color: var(--text-primary);
-	}
-
-	.site-brand__tagline {
-		color: var(--text-muted);
-		font-size: 0.9rem;
-	}
-
-	.site-nav {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
-		justify-content: center;
-		gap: 0.35rem;
+		gap: 1rem;
+		width: min(calc(100% - 4rem), var(--reading-width));
+		min-height: 4rem;
+		margin: 0 auto;
 	}
 
-	.site-nav :global(a) {
-		padding: 0.55rem 0.8rem;
-		border-radius: 999px;
-		text-decoration: none;
-		color: var(--text-muted);
-		transition:
-			color 180ms ease,
-			background-color 180ms ease;
+	.site-header__inner :global(.theme-toggle) {
+		margin-inline-start: auto;
 	}
 
-	.site-nav :global(a:hover),
-	.site-nav :global(a.active) {
-		color: var(--text-primary);
-		background: var(--surface);
+	.back-link {
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+		font-size: 1rem;
 	}
 
-	@media (max-width: 860px) {
+	@media (max-width: 720px) {
 		.site-header__inner {
-			grid-template-columns: 1fr auto;
-		}
-
-		.site-nav {
-			grid-column: 1 / -1;
-			justify-content: flex-start;
-		}
-	}
-
-	@media (max-width: 640px) {
-		.site-header {
-			padding: 0.8rem;
-		}
-
-		.site-brand__tagline {
-			display: none;
+			width: calc(100% - 2.5rem);
 		}
 	}
 </style>
