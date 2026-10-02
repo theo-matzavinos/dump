@@ -176,6 +176,11 @@ img {
   border-radius: 0.5rem;
 }
 
+pre,
+code {
+  font-variant-ligatures: none;
+}
+
 code {
   padding: 0.12rem 0.35rem;
   background: var(--code-inline);
