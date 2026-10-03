@@ -10,11 +10,17 @@ Astro blog starter for markdown-first publishing with:
 
 ## Commands
 
-| Command | Action |
-| :--- | :--- |
-| `npm run dev` | Start the local Astro dev server |
-| `npm run build` | Build the production site into `dist/` |
-| `npm run preview` | Preview the production build locally |
+Use Node.js 22.12.0 or newer and pnpm 12.8.1 (pinned in `package.json`).
+
+| Command                          | Action                                 |
+| :------------------------------- | :------------------------------------- |
+| `pnpm install --frozen-lockfile` | Install dependencies from the lockfile |
+| `pnpm dev`                       | Start the local Astro dev server       |
+| `pnpm build`                     | Build the production site into `dist/` |
+| `pnpm preview`                   | Preview the production build locally   |
+
+If Sharp detects a system libvips and tries to build from source, use
+`SHARP_IGNORE_GLOBAL_LIBVIPS=1 pnpm install --frozen-lockfile` to use its bundled binary.
 
 ## Writing posts
 
@@ -45,6 +51,7 @@ flowchart TD
 
 - Update site metadata in `src/consts.ts`
 - Adjust the design in `src/styles/global.css`
+- Configure fonts in `astro.config.mjs`; Astro's Fonts API serves the local files in `src/assets/fonts/` with base-aware URLs, styles, and preloads
 
 ## GitHub Pages
 

@@ -1,5 +1,4 @@
 :root {
-  --font-sans: "Atkinson", "Avenir Next", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", monospace;
   --max-width: 72rem;
   --reading-width: 70ch;
@@ -32,22 +31,6 @@
   --code-inline: #efe3d6;
   --quote: #efe4d7;
   color-scheme: light;
-}
-
-@font-face {
-  font-family: "Atkinson";
-  src: url("/fonts/atkinson-regular.woff") format("woff");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Atkinson";
-  src: url("/fonts/atkinson-bold.woff") format("woff");
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
 }
 
 * {

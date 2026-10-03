@@ -3,6 +3,7 @@
 // all pages through the use of the <BaseHead /> component.
 import '../styles/global.css';
 import type { ImageMetadata } from 'astro';
+import { Font } from 'astro:assets';
 import FallbackImage from '../assets/blog-placeholder-1.jpg';
 import { SITE_TITLE } from '../consts';
 
@@ -49,9 +50,8 @@ const { title, description, image = FallbackImage } = Astro.props;
 />
 <meta name="generator" content={Astro.generator} />
 
-<!-- Font preloads -->
-<link rel="preload" href={withBase('/fonts/atkinson-regular.woff')} as="font" type="font/woff" crossorigin />
-<link rel="preload" href={withBase('/fonts/atkinson-bold.woff')} as="font" type="font/woff" crossorigin />
+<!-- Font styles and preloads -->
+<Font cssVariable="--font-sans" preload />
 
 <!-- Canonical URL -->
 <link rel="canonical" href={canonicalURL} />
