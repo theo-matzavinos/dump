@@ -47,6 +47,9 @@ flowchart TD
 ```
 ````
 
+For runnable article examples, see [the small browser-check workflow](docs/article-checks.md).
+It extracts identified fences and validates browser result elements and measured viewports.
+
 ## Personalization
 
 - Update site metadata in `src/consts.ts`
