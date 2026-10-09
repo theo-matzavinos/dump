@@ -1,3 +1,26 @@
 ---
-return Astro.redirect(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/`, 301);
+const siteRoot = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+
+if (import.meta.env.DEV) {
+	return Astro.redirect(siteRoot, 301);
+}
+
+const canonicalURL = new URL(siteRoot, Astro.site);
 ---
+
+<!-- Astro's generated static redirect has no favicon links. -->
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href={`${siteRoot}favicon.svg`} />
+		<link rel="icon" href={`${siteRoot}favicon.ico`} />
+		<meta http-equiv="refresh" content={`0;url=${siteRoot}`} />
+		<meta name="robots" content="noindex" />
+		<link rel="canonical" href={canonicalURL} />
+		<title>Redirecting to: {siteRoot}</title>
+	</head>
+	<body>
+		<a href={siteRoot}>Continue to articles</a>
+	</body>
+</html>
