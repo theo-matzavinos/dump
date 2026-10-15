@@ -1,7 +1,8 @@
 ---
 title: "HTTP from TCP to fetch: messages, connections, and CORS"
-description: "Read HTTP/1.1 messages, understand connection reuse, map fetch to HTTP, and debug CORS by separating network delivery from browser access."
+description: "Follow one task-board request from TCP bytes to HTTP messages to fetch, learn why browsers block some cross-origin responses, and find which layer broke when a request fails."
 pubDate: "2026-09-30"
+updatedDate: "2026-10-15"
 tags:
   - http
   - networking
@@ -9,54 +10,47 @@ tags:
   - cors
 ---
 
-A frontend request can fail at several different layers.
+You click Save on the task board and the console says the request failed. That one line can hide four different problems:
 
-The connection might not open. The server might return `500`. The response might be successful HTTP but inaccessible to JavaScript because of CORS. The body might arrive and then fail JSON parsing.
+1. The browser never connected to the server.
+2. The server answered, but with an error status such as `500`.
+3. The server answered `201 Created`, but the browser wouldn't hand the response to your JavaScript. That's a CORS error.
+4. The response arrived, but `response.json()` couldn't parse its body.
 
-Calling all of those “the request failed” makes debugging harder than it needs to be.
+Each one needs a different fix, so the first job is working out which layer broke. This article climbs those layers in order: how bytes travel between two machines, how HTTP turns those bytes into requests and responses, and what the browser adds on top when you call `fetch`.
 
-A useful bottom-up model is:
+One request runs through the whole article: the task board at `https://app.example.com` saves a new task to an API at `https://api.example.com`. The `Task` shape (`id`, `title`, `done`) is the one the task-board articles use, starting with [HTML, the DOM, and events](/dump/blog/html-dom-and-events/).
 
-> Transport moves bytes. HTTP gives those bytes meaning. Browser APIs expose a policy-filtered view of the result.
-
-HTTP/1.1 makes the message format easy to inspect. HTTP/2 and HTTP/3 change transport and framing without replacing the familiar methods, status codes, and header semantics.
+You'll need to have called `fetch` with `async` and `await` to follow the code. The raw messages use HTTP/1.1 because its text format is easy to read. Connection limits and DevTools layouts vary between browsers, so the Network panel in your browser's DevTools is the place to confirm what actually happened.
 
 ## Contents
 
-1. [TCP: a reliable byte stream](#tcp-a-reliable-byte-stream)
-2. [HTTP gives the stream message boundaries](#http-gives-the-stream-message-boundaries)
-3. [Methods and status codes are semantics](#methods-and-status-codes-are-semantics)
-4. [Headers describe different concerns](#headers-describe-different-concerns)
-5. [Connections and keep-alive](#connections-and-keep-alive)
+1. [Bytes between two machines](#bytes-between-two-machines)
+2. [HTTP messages](#http-messages)
+3. [Methods and status codes](#methods-and-status-codes)
+4. [Headers](#headers)
+5. [Connections, HTTP/2, and HTTP/3](#connections-http2-and-http3)
 6. [From fetch to HTTP](#from-fetch-to-http)
-7. [Origins and browser policy](#origins-and-browser-policy)
+7. [Why browsers limit cross-origin responses](#why-browsers-limit-cross-origin-responses)
 8. [CORS without preflight](#cors-without-preflight)
 9. [CORS with preflight](#cors-with-preflight)
 10. [Credentials and exposed headers](#credentials-and-exposed-headers)
-11. [Loading a page means loading resources](#loading-a-page-means-loading-resources)
-12. [What HTTP/2 and HTTP/3 change](#what-http2-and-http3-change)
-13. [A debugging checklist](#a-debugging-checklist)
+11. [A debugging checklist](#a-debugging-checklist)
 
-## TCP: a reliable byte stream
+## Bytes between two machines
 
-Networks can lose, duplicate, and reorder packets. TCP provides applications with an ordered byte stream, recovering from packet loss where possible and reporting connection failure when it cannot continue.
+Networks move data in small chunks called **packets**. Along the way, packets can get lost, duplicated, or arrive out of order. **TCP** (Transmission Control Protocol) hides that from programs: it numbers the bytes, resends what goes missing, and hands the receiving program one ordered stream of bytes. If it can't recover, it reports that the connection failed.
 
-A TCP connection has two endpoints. Each has an IP address and a port:
+To connect, a program needs two numbers for the other side. An **IP address** picks the machine. A **port** picks the program on that machine. HTTPS servers usually listen on port `443`. Your side gets a port too, which the operating system picks for the length of the connection, so a connection looks like this:
 
 ```text
 client:  192.0.2.10:54321
 server:  198.51.100.20:443
 ```
 
-The server listens on a service port. The client's operating system typically assigns an ephemeral port. These example addresses are documentation addresses, not services to call.
+These addresses come from ranges reserved for documentation, so they don't point at real machines.
 
-TCP is bidirectional: each endpoint can send bytes. It does **not** know where an HTTP request starts or ends.
-
-If the sender writes two pieces of data, the receiver is not guaranteed two matching reads. TCP may split or combine the bytes while preserving their order. The application protocol must define its own message boundaries.
-
-### Establishing a connection
-
-The familiar three-way handshake establishes the TCP connection:
+Before connecting, the browser usually needs **DNS** (Domain Name System) to turn a name such as `api.example.com` into an IP address. Then TCP opens the connection with a three-message exchange called the handshake:
 
 ```mermaid
 sequenceDiagram
@@ -68,71 +62,80 @@ sequenceDiagram
     Note over C,S: TCP connection established
 ```
 
-For a new HTTPS connection using HTTP/1.1 or HTTP/2, TLS adds encryption and server authentication over TCP before ordinary HTTP application data is exchanged. DNS lookup may also be necessary before connecting. Caches, existing connections, and session resumption can change the observed setup cost.
+For an `https` URL, one more step follows. **TLS** (Transport Layer Security) encrypts the connection and lets the browser check that the server really is `api.example.com`. Only then does HTTP data flow. A cached DNS answer or an already-open connection lets the browser skip some of these steps.
 
-This is a model for HTTP over TCP, not a statement that every HTTP version uses TCP. HTTP/3 uses QUIC instead.
+Once the connection is open, either side can send bytes. But TCP only promises order. It doesn't know where one HTTP request ends and the next begins. If the sender writes two pieces of data, the receiver might get them in one read or in three; only the order is guaranteed. So HTTP has to mark its own message boundaries, and that's the next layer.
 
-## HTTP gives the stream message boundaries
+## HTTP messages
 
-HTTP/1.1 structures bytes into messages with a start line, header fields, a blank line, and an optional body.
+An HTTP/1.1 message is text with four parts: a start line, header lines, a blank line, and an optional body.
 
 ### A request
 
+When the task board loads its tasks, the browser sends something like this:
+
 ```http
-GET /api/users HTTP/1.1
+GET /api/tasks HTTP/1.1
 Host: api.example.com
 Accept: application/json
 
 ```
 
-The request line has:
+The first line holds three things:
 
-- a method: `GET`;
-- a request target: `/api/users`;
-- a protocol version: `HTTP/1.1`.
+- the method, `GET`, which says what you want done;
+- the path, `/api/tasks`, which says what you want it done to;
+- the protocol version, `HTTP/1.1`.
 
-`Host` identifies the target authority and is required in HTTP/1.1 requests. One server address can serve multiple hostnames, so the IP address alone is not enough to identify the intended site.
+`Host` names the site you're asking for, and HTTP/1.1 requires it. One IP address can serve many sites, so the address alone isn't enough to pick one.
 
-These blocks display line breaks for readability. HTTP/1.1 uses CRLF line endings; the empty line terminates the header section even when no body follows.
+The lines in these examples end with plain line breaks for readability. On the wire, HTTP/1.1 ends each line with two characters, a carriage return and a line feed (CRLF). The empty line ends the headers, even when no body follows.
 
-### A response
+### The running request: saving a task
 
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-Content-Length: 25
-
-{"users":["alice","bob"]}
-```
-
-The response starts with the version, status code, and a reason phrase. Applications should use the status code, not depend on the phrase.
-
-`Content-Length: 25` describes the 25 bytes of the displayed JSON body, with no trailing newline. Length is in **bytes**, not JavaScript string characters. Non-ASCII text makes that distinction important.
-
-### A request with a body
+Saving a new task sends a body:
 
 ```http
-POST /api/users HTTP/1.1
+POST /api/tasks HTTP/1.1
 Host: api.example.com
 Content-Type: application/json
-Content-Length: 32
+Content-Length: 47
 
-{"name":"alice","role":"editor"}
+{"title":"Write the HTTP article","done":false}
 ```
 
-The headers describe how to interpret and delimit the body. They do not establish that its application data is valid. The server still needs to validate the input and authorize the operation.
+`Content-Type` says the body is JSON. `Content-Length` says how many bytes to read after the blank line: here, exactly the 47 bytes of the JSON, with no trailing newline.
 
-### Framing: how the receiver knows when to stop
+That count is in **bytes**, not JavaScript string characters. The two match for basic English letters, digits, and punctuation, but not beyond them. In UTF-8, the usual text encoding on the web, `é` takes two bytes:
 
-On a reusable connection, the receiver must distinguish the end of one message from the beginning of the next.
+```js
+"é".length;                           // 1 character
+new TextEncoder().encode("é").length; // 2 bytes in UTF-8
+```
 
-Common HTTP/1.1 body-length mechanisms include:
+The headers only describe the body. They don't make its contents valid, so the server still has to check the task and decide whether this caller may create it.
 
-- **Content-Length:** read the specified number of bytes.
-- **Chunked transfer coding:** read a sequence of size-prefixed chunks and a terminating zero-size chunk.
-- **Connection closure:** for certain responses, closing the connection marks the end of the body, preventing reuse of that connection.
+### The response
 
-For example, this chunked response carries the text `hello`:
+If the server accepts the task, it answers:
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Content-Length: 55
+
+{"id":42,"title":"Write the HTTP article","done":false}
+```
+
+The first line holds the version, the status code `201`, and a short text called the reason phrase. Code should check the number; the phrase is only for people reading the message.
+
+### Where a message ends
+
+One connection can carry many messages, so the receiver has to know where each body stops. HTTP/1.1 does it in one of two common ways.
+
+With **`Content-Length`**, the receiver reads exactly that many bytes, as in the examples above.
+
+With **chunked transfer coding**, the sender doesn't need to know the length up front. It sends the body in pieces, each prefixed with its size in hexadecimal, and finishes with a zero-size piece:
 
 ```http
 HTTP/1.1 200 OK
@@ -145,65 +148,63 @@ hello
 
 ```
 
-Chunk sizes are hexadecimal. Real chunk framing also uses CRLF, and the terminating chunk can be followed by trailers before the final empty line.
+Some responses never have a body at all: anything answering a `HEAD` request, a `204 No Content`, or a `304 Not Modified`. A message also must never carry both `Content-Length` and `Transfer-Encoding`. If a **proxy** (a server that sits in between and forwards requests) trusts one and the server behind it trusts the other, they disagree about where one request ends and the next begins, and attackers exploit exactly that. You won't run into this from `fetch`, because the browser writes these headers itself.
 
-Some responses have no message body by definition, including responses to `HEAD` and statuses such as `204` and `304`. Do not treat the body-length rules as a single unconditional “read Content-Length” instruction. Senders also must not combine `Content-Length` with `Transfer-Encoding`; ambiguous framing is a security-sensitive protocol error, not something application code should improvise around.
+## Methods and status codes
 
-## Methods and status codes are semantics
+The method says what the request is meant to do. Here are the ones you'll see most:
 
-HTTP methods express the intended operation, not merely whether a JSON body is present.
+| Method  | What it asks for                                                            |
+| ------- | --------------------------------------------------------------------------- |
+| GET     | Read the data at this URL without changing anything                         |
+| HEAD    | Same as GET, but send back only the headers                                 |
+| POST    | Process the request body; often "create a new item", but it can be anything |
+| PUT     | Replace the thing at this URL with the request body                         |
+| PATCH   | Change part of the thing at this URL                                        |
+| DELETE  | Delete the thing at this URL                                                |
+| OPTIONS | Ask what's allowed at this URL; browsers use it for CORS preflight          |
 
-| Method  | Core meaning                                                                   |
-| ------- | ------------------------------------------------------------------------------ |
-| GET     | Retrieve a representation                                                      |
-| HEAD    | Retrieve response metadata without a response body                             |
-| POST    | Ask the target resource to process the supplied content                        |
-| PUT     | Create or replace the target resource's state with the supplied representation |
-| PATCH   | Apply a modification described by the request                                  |
-| DELETE  | Remove the association with the target resource                                |
-| OPTIONS | Describe communication options; also used for CORS preflight                   |
+Two properties matter when you decide whether a failed request is safe to retry:
 
-Two terms matter for retries:
+- **Safe** methods only read. GET and HEAD are safe; the server may still write a log line, but the request doesn't ask for a change.
+- **Idempotent** methods have the same effect whether you send them once or five times. PUT and DELETE are idempotent: replacing task 42 with the same data twice leaves the same task, and deleting it twice still leaves it deleted. The second DELETE might answer `404` instead of `204`, but the end state is the same.
 
-- **Safe:** the requested semantics are read-only. GET and HEAD are safe, even though incidental logging can still happen.
-- **Idempotent:** repeating the same request has the same intended effect as making it once. PUT and DELETE are idempotent; POST is not inherently idempotent.
+POST isn't idempotent. Sending the save request twice can create two tasks. Keep that in mind for the CORS section, where a request can succeed on the server even though your code sees an error.
 
-Idempotent does not mean “the response is identical.” Deleting something twice may yield different statuses while still having the same intended final effect.
-
-The Fetch API does not permit a body on GET or HEAD. More generally, GET request content has no broadly defined semantics; do not design a browser API around a GET body.
+`fetch` refuses to send a body with GET or HEAD, so don't design an API that expects one.
 
 ### Status families
 
-| Family | Meaning                                        | Examples                                  |
-| ------ | ---------------------------------------------- | ----------------------------------------- |
-| 1xx    | Informational, before a final response         | `100 Continue`                            |
-| 2xx    | Successful processing                          | `200 OK`, `201 Created`, `204 No Content` |
-| 3xx    | Redirection or related representation handling | `301`, `302`, `304 Not Modified`          |
-| 4xx    | A problem attributed to the request            | `400`, `401`, `403`, `404`                |
-| 5xx    | Server-side failure                            | `500`, `502`, `503`                       |
+The first digit of the status code tells you the family:
 
-Not every 3xx status means “navigate to another URL.” `304`, for example, is used in cache validation. A `401` generally concerns authentication; a `403` means the server refuses to fulfill the request.
+| Family | Meaning                                      | Examples                                  |
+| ------ | -------------------------------------------- | ----------------------------------------- |
+| 1xx    | Informational, sent before the real answer   | `100 Continue`                            |
+| 2xx    | It worked                                    | `200 OK`, `201 Created`, `204 No Content` |
+| 3xx    | Look elsewhere, or use what you already have | `301`, `302`, `304 Not Modified`          |
+| 4xx    | Something is wrong with the request          | `400`, `401`, `403`, `404`                |
+| 5xx    | The server failed                            | `500`, `502`, `503`                       |
 
-## Headers describe different concerns
+Not every 3xx sends you to another URL. `304` tells the browser its cached copy is still good; the [caching article](/dump/blog/caching-static-files-and-requests/) covers how that works. `401` means the request lacks valid authentication credentials. `403` means the server understood the request but refuses it; missing permissions are one possible reason.
 
-Headers become easier to reason about when grouped by responsibility.
+## Headers
 
-| Concern                | Examples                                 | Question answered                                             |
-| ---------------------- | ---------------------------------------- | ------------------------------------------------------------- |
-| Representation         | `Content-Type`, `Content-Encoding`       | What is this body and how is it encoded?                      |
-| Negotiation            | `Accept`, `Accept-Encoding`              | Which response formats or encodings can the client handle?    |
-| Framing                | `Content-Length`, `Transfer-Encoding`    | How is this HTTP/1.1 body delimited?                          |
-| Caching                | `Cache-Control`, `ETag`, `If-None-Match` | Can a stored response be reused or validated?                 |
-| Identity               | `Authorization`, `Cookie`, `Set-Cookie`  | What authentication or session data accompanies the exchange? |
-| Browser sharing policy | `Origin`, `Access-Control-*`             | May browser JavaScript access the cross-origin response?      |
+Headers are easier to read when you group them by the question they answer:
 
-`Accept: application/json` asks for a JSON response. `Content-Type: application/json` describes the body of the message carrying that header. They are not interchangeable.
+| Group                | Examples                                 | Question answered                                              |
+| -------------------- | ---------------------------------------- | -------------------------------------------------------------- |
+| Body description     | `Content-Type`, `Content-Encoding`       | What is this body and how is it encoded?                       |
+| Negotiation          | `Accept`, `Accept-Encoding`              | Which formats or encodings can the client handle?              |
+| Framing              | `Content-Length`, `Transfer-Encoding`    | Where does this HTTP/1.1 body end?                             |
+| Caching              | `Cache-Control`, `ETag`, `If-None-Match` | Can a stored response be reused or rechecked?                  |
+| Identity             | `Authorization`, `Cookie`, `Set-Cookie`  | Who is making this request, and what session is it part of?    |
+| Cross-origin sharing | `Origin`, `Access-Control-*`             | May browser JavaScript read this response from another origin? |
 
-Likewise, `Content-Encoding: gzip` concerns representation compression. `Transfer-Encoding: chunked` concerns HTTP/1.1 transfer framing. A compressed response can also be chunked.
+Two pairs get mixed up often. `Accept: application/json` asks for a JSON response, while `Content-Type: application/json` describes the body of the message that carries it. And `Content-Encoding: gzip` means the body is compressed, while `Transfer-Encoding: chunked` describes how it's split for sending. A response can be both.
 
-## Connections and keep-alive
+## Connections, HTTP/2, and HTTP/3
 
-Opening a new connection for every resource repeats setup work. HTTP/1.1 defaults to persistent connections, allowing multiple exchanges over a connection.
+Opening a connection costs a DNS lookup, a TCP handshake, and a TLS setup. So HTTP/1.1 keeps connections open by default and sends the next request over the same one:
 
 ```mermaid
 sequenceDiagram
@@ -214,125 +215,147 @@ sequenceDiagram
     S-->>B: Response 1
     B->>S: Request 2
     S-->>B: Response 2
-    Note over B,S: Reuse until closed or no longer useful
+    Note over B,S: Reuse until either side closes it
 ```
 
-An explicit `Connection: keep-alive` header is not required to obtain HTTP/1.1's default persistence. `Connection: close` indicates that the connection will not remain reusable after the current response.
+You don't need a `Connection: keep-alive` header for this; it's the HTTP/1.1 default. A `Connection: close` header says the connection will close after this response.
 
-Persistence is an opportunity, not a guarantee. Servers, proxies, and clients can close connections because of timeouts, resource limits, or failures.
+Don't count on a connection staying open, though. Servers close idle connections after a few seconds, and proxies drop them under load. The browser simply opens a new one when it needs to.
 
-### Reuse is not multiplexing
+### Why HTTP/1.1 can't interleave responses
 
-For ordinary browser HTTP/1.1 traffic, think of a small pool of connections, with exchanges proceeding sequentially on each connection. Parallel requests can use different connections.
+On one HTTP/1.1 connection, responses come back one at a time, in request order. A slow response holds up everything behind it. So browsers open several connections to the same server and spread requests across them. You'll often hear "six connections per host"; that's what browsers commonly do, but it's a browser choice, and the exact limits vary.
 
-HTTP/1.1 also defines **pipelining**, which allows sending multiple requests before their responses arrive. Responses still have to be sent in request order, so a slow earlier response can hold up later ones. Pipelining is not HTTP/2-style multiplexing and is not the model to rely on for normal browser request scheduling.
+HTTP/2 fixes this with **multiplexing**: it splits each request and response into small binary frames, labels each frame with the exchange it belongs to, and interleaves frames from many exchanges on one connection. A slow response no longer blocks the others.
 
-You will often hear “six connections per origin.” Treat that as a common implementation behavior, not a protocol guarantee. Exact pooling rules and limits vary.
+HTTP/2 still runs on TCP, though. If one packet goes missing, TCP holds back every byte after it until the resend arrives, so all the interleaved exchanges wait together.
+
+HTTP/3 replaces TCP with **QUIC**, a transport built on UDP (a simpler protocol that sends packets without ordering or resending them). QUIC builds in TLS encryption and tracks each exchange's bytes separately, so one exchange doesn't wait for another exchange's missing bytes. A single packet can carry data for several exchanges, though, so losing it delays every exchange whose data it carried, and all exchanges still share the connection's limits on how fast it may send.
+
+| Version  | Runs on     | How exchanges share a connection                                               |
+| -------- | ----------- | ------------------------------------------------------------------------------ |
+| HTTP/1.1 | TCP         | One response at a time, in order                                               |
+| HTTP/2   | TCP         | Interleaved, but a lost packet stalls all of them                              |
+| HTTP/3   | QUIC on UDP | Interleaved, and a lost packet stalls only the exchanges whose data it carried |
+
+All three keep the same methods, status codes, and headers. Your `fetch` call doesn't change either: the browser and server pick a version they both support. To see which one a request used, turn on the Protocol column in the Network panel. The text messages in this article are HTTP/1.1; an HTTP/2 or HTTP/3 capture looks different on the wire even though it means the same thing.
 
 ## From fetch to HTTP
 
-`fetch` asks the browser to perform a resource request. The browser handles transport negotiation, connection management, caching, and policy checks.
+Here's the save request from the task board:
 
 ```js
-async function createUser(name) {
-  const response = await fetch("https://api.example.com/users", {
+async function createTask(title) {
+  const response = await fetch("https://api.example.com/api/tasks", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ title, done: false }),
   });
 
   if (!response.ok) {
-    throw new Error(`Create user failed: ${response.status}`);
+    throw new Error(`Saving the task failed: ${response.status}`);
   }
 
   return response.json();
 }
 ```
 
-This example assumes a successful response has a JSON body. An API returning `204 No Content` needs a different success path; parsing an empty body as JSON is an error.
+Each part of the call ends up in the message you saw earlier:
 
-The mapping is straightforward:
+- the URL supplies the host and the path, `/api/tasks`;
+- `method` becomes the method on the first line;
+- `headers` adds the headers you're allowed to set;
+- `body` becomes the body.
 
-- The URL supplies the target authority, path, and query.
-- `method` supplies the HTTP method.
-- Allowed headers describe the request.
-- `body` supplies content.
-- The browser determines protocol-specific framing and adds controlled headers.
+The browser adds the rest. Your code can't set `Host`, `Content-Length`, or `Cookie` itself; the browser writes those. It also picks HTTP/1.1, HTTP/2, or HTTP/3 and handles connections and caching.
 
-Application JavaScript cannot freely set headers such as `Host`, `Content-Length`, or `Cookie`. With HTTP/2 or HTTP/3, the wire representation differs from the textual HTTP/1.1 examples even though your `fetch` call is the same.
+This function expects a successful response to have a JSON body. An API that answers `204 No Content` needs a different success path, because parsing an empty body as JSON throws.
 
-### Receiving a response is not reading the whole body
+### When the fetch promise resolves
 
-The fetch promise can resolve once a response is available, before its complete body has arrived. Body-reading methods such as `response.json()` are asynchronous too, and can fail during reading or parsing.
+`fetch` resolves as soon as the status and headers arrive, often before the whole body has. `response.json()` then reads the rest of the body and parses it, so it's asynchronous too, and it can fail on its own: that's failure 4 from the opening.
 
-`response.ok` is true for statuses `200` through `299`. Fetch normally **resolves** for HTTP errors such as `404` and `500`; inspect the status yourself. Network failures, aborts, and CORS failures can reject the promise instead.
+`response.ok` is `true` for statuses `200` to `299`. A `404` or a `500` still **resolves** the promise; the server answered, so it's up to your code to check the status. The promise **rejects** when there's no usable response at all: a failed connection or a failed CORS check rejects with a `TypeError`, and a request you cancelled with an `AbortController` rejects with an `AbortError`.
 
-Bodies are streams and are generally consumed once. Calling `json()` and then `text()` on the same consumed response does not reread it. If you genuinely need separate consumers, cloning before consumption is an option, but it can incur buffering costs.
+The body arrives in pieces, so it can only be read once. Calling `response.json()` and then `response.text()` on the same response fails on the second call. If two pieces of code really need the body, call `response.clone()` before reading.
 
-`XMLHttpRequest` exposes the same underlying HTTP and browser-policy concerns through an event-based API. It is not a way to bypass CORS.
+### Angular's HttpClient
 
-## Origins and browser policy
+Angular's `HttpClient` sits on the same mechanics. In current Angular it uses `fetch` by default, so everything in this article applies to it. The difference is how errors arrive: `HttpClient` sends both a `500` and a rejected request down the observable's error channel as an `HttpErrorResponse`. A server error keeps its status, such as `500`. A connection or CORS failure has status `0`, because no readable response ever reached your code.
 
-For ordinary HTTP(S) URLs, an origin is the combination of scheme, host, and effective port.
+## Why browsers limit cross-origin responses
+
+Here's the problem the browser is guarding against. You're logged in to your bank in one tab. In another tab you open some random site, and its JavaScript calls `fetch("https://bank.example/api/balance")`. Your browser holds the bank's **cookies**: small values a server asks the browser to store and send back automatically on later requests, which is how the bank remembers you're logged in. If the browser attached them and handed the response to that site's code, the site could read your balance.
+
+So browsers enforce the **same-origin policy**: a page's JavaScript can freely read responses from its own origin, but by default it can't read responses from other origins.
+
+An **origin** is the scheme, host, and port of a URL together:
 
 ```text
 https://app.example.com
-https://app.example.com:443    → same origin as above
-http://app.example.com        → different scheme
-https://api.example.com       → different host
-https://app.example.com:8443  → different port
+https://app.example.com:443    → same origin as above (443 is the https default)
+http://app.example.com         → different scheme
+https://api.example.com        → different host
+https://app.example.com:8443   → different port
 ```
 
-Changing only the path does not change the origin.
+The path doesn't matter: `/api/tasks` and `/settings` on the same origin are the same origin.
 
-The **same-origin policy** limits how one origin can access another origin's resources. **CORS** is the browser's protocol for allowing selected cross-origin access.
+The task board at `https://app.example.com` and its API at `https://api.example.com` have different hosts, so they're different origins. **CORS** (Cross-Origin Resource Sharing) is how the API relaxes the policy for the task board: it adds response headers that say "`https://app.example.com` may read this".
 
-The important distinction is between **sending an operation** and **letting JavaScript inspect its response**.
+The check happens inside the browser. curl, Postman, and other servers ignore it entirely. That's why CORS doesn't protect your API: anyone outside a browser can still call it, so the API still needs its own authentication.
 
-CORS is not API authentication. A command-line client or another server does not need a browser's CORS permission to call your API. It still needs whatever authentication and authorization the API requires.
-
-CORS is also not a complete CSRF defense: some cross-origin operations can be sent without preflight, even when JavaScript cannot read the response.
+Embedding works differently from reading. A page can show an image from another origin in an `<img>` tag without any CORS headers, but its JavaScript still can't read the image's bytes. So "it displays in an `<img>` tag" doesn't mean `fetch` can read the same URL. The [browser rendering article](/dump/blog/browser-rendering-and-performance/) covers how a page loads its other resources.
 
 ## CORS without preflight
 
-Some cross-origin requests qualify to be sent without a preliminary permission check. These are often called “simple requests”; the standard describes safelisted methods and headers.
+Some cross-origin requests go out right away. These are often called **simple requests**: GET, HEAD, or POST with only a few allowed headers, and if there's a body, a `Content-Type` of `text/plain`, `application/x-www-form-urlencoded`, or `multipart/form-data`. (The standard has a few more rules about header values, but that's the core of it.)
 
-At a high level, this includes GET, HEAD, or POST with permitted header values. Safelisted content types include `text/plain`, `application/x-www-form-urlencoded`, and `multipart/form-data`. There are additional restrictions on header values and request construction; method and media type alone are not the whole algorithm.
-
-Consider a non-credentialed request from `https://app.example.com`:
+Loading the task list is one:
 
 ```js
-const response = await fetch("https://api.example.com/public-users");
+const response = await fetch("https://api.example.com/api/tasks");
 ```
 
-The browser can send the GET directly with an `Origin` header. To expose the response, the server might return:
+The browser sends the GET straight away and adds an `Origin` header saying where the request came from:
+
+```http
+GET /api/tasks HTTP/1.1
+Host: api.example.com
+Origin: https://app.example.com
+
+```
+
+To let the task board read the response, the API includes:
 
 ```http
 Access-Control-Allow-Origin: https://app.example.com
 Vary: Origin
 ```
 
-A public response intended for any origin, without credentials mode `include`, can instead use:
+`Vary: Origin` tells caches that the response depends on the `Origin` header, so a copy made for one origin isn't reused for another. The API should only send back an origin after checking it against its own list of allowed origins. Copying whatever `Origin` arrives into the response allows every site.
+
+A public response that any site may read, without cookies, can use a wildcard instead:
 
 ```http
 Access-Control-Allow-Origin: *
 ```
 
-If the server does not grant access, the GET may still have reached the server and produced a successful HTTP response. JavaScript's fetch promise fails the CORS check rather than receiving that readable response.
+Now the part that surprises people. If the server leaves out `Access-Control-Allow-Origin`, the GET still happened. The server received it, ran its code, and sent back a `200` with the task list, and the browser received that too. It just won't give it to your code: the `fetch` promise rejects with a `TypeError`, and the console shows a CORS error. A CORS error doesn't mean the server never saw your request.
 
-`Vary: Origin` matters when the response policy changes based on the request's origin and the response may be cached. Only emit an allowed origin after checking it against the intended policy; blindly reflecting any origin is not an allowlist.
+The same goes for a POST that qualifies as a simple request. If the task board sent the new task as `text/plain`, the browser would send it without asking first, the server would create the task, and only then would the browser hide the response. That's why CORS isn't a full defense against **CSRF** (cross-site request forgery: another site making your browser send a state-changing request with your cookies). The browser blocks the read, not the send.
 
 ## CORS with preflight
 
-A cross-origin JSON POST typically needs preflight because `application/json` is not a CORS-safelisted content type. PUT, PATCH, and non-safelisted headers such as `Authorization` can also require preflight.
+`createTask` sends `Content-Type: application/json`, and that isn't one of the simple content types. Methods such as PUT and PATCH, and headers such as `Authorization`, also take a request out of the simple category.
 
-Before sending the operation, the browser asks permission using OPTIONS:
+For these requests, the browser asks permission before sending anything. This question is called the **preflight**, and it uses the OPTIONS method on the same path:
 
 ```http
-OPTIONS /users HTTP/1.1
+OPTIONS /api/tasks HTTP/1.1
 Host: api.example.com
 Origin: https://app.example.com
 Access-Control-Request-Method: POST
@@ -340,7 +363,9 @@ Access-Control-Request-Headers: content-type
 
 ```
 
-The server can permit it with:
+Notice what's listed: the method `createTask` wants to use, and the one header that isn't on the browser's simple list. `Accept` is on that list, so it doesn't appear.
+
+The API grants permission with:
 
 ```http
 HTTP/1.1 204 No Content
@@ -352,41 +377,41 @@ Vary: Origin
 
 ```
 
-Then the browser sends the POST. Its response must **also** include the appropriate `Access-Control-Allow-Origin`; permission on OPTIONS alone does not make the actual response readable.
+Then the browser sends the real POST from earlier. Its response needs its **own** `Access-Control-Allow-Origin` header; permission on the OPTIONS response doesn't make the POST response readable.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant S as API server
-    B->>S: OPTIONS: may this origin POST JSON?
-    S-->>B: Successful preflight with allow headers
-    B->>S: POST with JSON body
-    S-->>B: Response with allow-origin header
-    Note over B: Expose response to application JavaScript
+    B->>S: OPTIONS /api/tasks: may this origin POST JSON?
+    S-->>B: 204 with allow headers
+    B->>S: POST /api/tasks with the JSON body
+    S-->>B: 201 Created with Access-Control-Allow-Origin
+    Note over B: Hand the response to createTask
 ```
 
-Two failure modes are different:
+That gives two different ways to fail:
 
-- **Preflight fails:** the browser does not send the actual POST.
-- **Actual response fails CORS:** the POST may have completed, but JavaScript cannot read its response.
+- **The preflight fails:** the browser never sends the POST. No task is created.
+- **The POST response lacks `Access-Control-Allow-Origin`:** the server already created the task, but `createTask` sees a rejected promise.
 
-That second case is especially important before retrying a mutation. A rejected fetch is not proof that the server did nothing.
+Both look the same in your code: a `TypeError`. That second case is why you shouldn't blindly retry a failed POST. The first attempt may have worked, and a retry creates a second copy of the task.
 
-Preflight results can be cached, subject to browser limits, so you should not expect an OPTIONS request before every repeat call. Cross-origin preflight itself does not include cookies or HTTP authentication credentials; a server requiring a logged-in session just to answer OPTIONS can prevent the actual request from ever being sent.
+`Access-Control-Max-Age: 600` lets the browser cache the permission for up to 600 seconds, and browsers apply their own upper limits. So don't expect an OPTIONS request before every save. The preflight never carries cookies either, so an API that requires a logged-in session to answer OPTIONS blocks the real request from ever being sent.
 
 ## Credentials and exposed headers
 
-Fetch defaults to `credentials: "same-origin"`. To allow browser-managed credentials such as eligible cookies on a cross-origin request, use:
+If the API knows who's logged in through a cookie, the task board's requests have to carry it. By default, `fetch` only sends cookies to its own origin. To send them along with a cross-origin request, ask for it:
 
 ```js
-const response = await fetch("https://api.example.com/account", {
+const response = await fetch("https://api.example.com/api/tasks", {
   credentials: "include",
 });
 ```
 
-This does not manufacture credentials or override cookie policy. Cookie attributes, `SameSite`, and third-party-cookie restrictions still apply. Cross-origin and cross-site are different concepts; two subdomains can be cross-origin while remaining same-site.
+This only allows the browser to send cookies it would have sent anyway. The cookie's own settings still apply: a cookie marked `SameSite=Lax` or `SameSite=Strict` isn't sent when a `fetch` comes from a different **site** (roughly, a different registered domain such as `example.com`). `app.example.com` and `api.example.com` are different origins but the same site, so `SameSite` doesn't block them. Browsers also restrict third-party cookies, meaning cookies for a site other than the one in the address bar.
 
-For credentials mode `include`, the server must grant response access using an explicit origin and credentials permission:
+For a request with `credentials: "include"`, the API has to name the origin explicitly and opt in to credentials:
 
 ```http
 Access-Control-Allow-Origin: https://app.example.com
@@ -394,99 +419,73 @@ Access-Control-Allow-Credentials: true
 Vary: Origin
 ```
 
-`Access-Control-Allow-Origin: *` is not valid for this mode, even if there happened to be no cookie available to send. Credentialed preflighted operations also need credentials permission on the preflight response.
+The `*` wildcard isn't allowed here, even if no cookie happened to be sent. When a credentialed request needs a preflight, the preflight response needs `Access-Control-Allow-Credentials: true` too.
 
-A bearer token you explicitly supply in an `Authorization` header is a separate application choice. `credentials: "include"` does not create or automatically attach your application's token. The header needs preflight permission and must be explicitly allowed; an `Access-Control-Allow-Headers: *` wildcard does not cover `Authorization`.
+A token you put in an `Authorization` header yourself is a separate thing. `credentials: "include"` doesn't attach it; your code does. Because `Authorization` triggers a preflight, the API has to allow it in `Access-Control-Allow-Headers`, and it must be listed explicitly. The Fetch standard excludes `Authorization` from `*`, regardless of credentials mode, even though some browsers still accept the wildcard for it. For a JSON request carrying a token, the preflight response needs:
+
+```http
+Access-Control-Allow-Headers: Authorization, Content-Type
+```
 
 ### Which response headers can JavaScript read?
 
-Successful CORS does not automatically expose every response header. A limited safelist is readable by default, including `Content-Type` and `Content-Length`.
-
-If your API returns a custom pagination header, expose it:
+Even when CORS allows the response, your code can only read a short list of response headers by default, such as `Content-Type` and `Content-Length`. If the API sends a custom header, for example a cursor for the next page of tasks, it has to expose it:
 
 ```http
 Access-Control-Expose-Headers: X-Next-Cursor
 X-Next-Cursor: page-2
 ```
 
-Then JavaScript can read it:
+Then your code can read it:
 
 ```js
 const nextCursor = response.headers.get("X-Next-Cursor");
 ```
 
-`Set-Cookie` is not exposed to browser JavaScript through response headers, even if you list it in `Access-Control-Expose-Headers`. The browser manages cookie processing separately.
+`Set-Cookie` is never readable from JavaScript, even if the API lists it. The browser handles cookies itself.
 
-### Why no-cors is not a fix
+### Why no-cors doesn't help
 
-`mode: "no-cors"` does not disable browser security. It restricts the request and can return an **opaque** response whose body and headers are unavailable to your code and whose exposed status is `0`.
+`mode: "no-cors"` sounds like a way to switch CORS off, but it does the opposite. It limits what the request may contain and returns an **opaque** response: status `0`, no readable headers, and no readable body. For an API call that needs JSON, it's useless.
 
-For a normal API call that needs JSON, this is not a useful workaround. Configure the API's sharing policy or use an intentional same-origin backend/proxy that owns the remote call and its authorization.
+The real fixes are to configure the API's CORS headers, or to make the request same-origin by putting a proxy on your own origin that forwards to the API. Angular's dev server is a common example of that proxy. A `src/proxy.conf.json` like this one, referenced from the `proxyConfig` option of the `serve` target in `angular.json`, forwards `/api` requests:
 
-## Loading a page means loading resources
+```json
+{
+  "/api/**": {
+    "target": "http://localhost:3000",
+    "secure": false
+  }
+}
+```
 
-A document request is usually only the beginning.
-
-As the browser parses HTML, it discovers stylesheets, scripts, images, fonts, and other resources. Those requests have different priorities, caching behavior, and execution dependencies.
-
-HTTP response arrival order does not by itself define JavaScript execution order. Classic parser-blocking scripts, `defer`, `async`, and modules have different loading and execution rules.
-
-Cross-origin embedding is also not the same as fetching a readable API response:
-
-- Images can often display without CORS, but drawing them to canvas can make the canvas unreadable to JavaScript.
-- Classic scripts can often load cross-origin without CORS; module scripts use CORS.
-- Stylesheets can often apply cross-origin while access to their rules remains restricted.
-
-Other policies, including Content Security Policy and resource-specific checks, can still block these loads. “It displays in an image tag” is not evidence that the same URL is readable through fetch.
-
-In DevTools, distinguish connection waiting, server response time, body download, and application processing. A long waterfall is not automatically “slow JavaScript,” and a fast response is not proof that the UI handled it quickly.
-
-## What HTTP/2 and HTTP/3 change
-
-HTTP/2 keeps HTTP semantics but uses binary framing and multiple streams over a connection. Frames from different exchanges can be interleaved instead of making each response wait for the previous response to finish.
-
-This removes HTTP/1.1's ordered-response bottleneck between exchanges on that connection. It does not remove shared bandwidth, server limits, flow control, or TCP's transport-level head-of-line blocking: missing TCP bytes can delay delivery for multiple streams.
-
-HTTP/3 carries HTTP over QUIC, which uses UDP and provides reliable streams with encryption. Packet loss affecting one stream need not hold up delivery on unrelated streams in the same way as TCP. The connection still has shared congestion and resource limits.
-
-| Version  | Transport and message model                                | Relevant distinction                                          |
-| -------- | ---------------------------------------------------------- | ------------------------------------------------------------- |
-| HTTP/1.1 | Usually TCP; textual message headers and ordered responses | Connection reuse is not multiplexing                          |
-| HTTP/2   | TCP; binary frames and multiplexed streams                 | Independent HTTP exchanges still share TCP delivery           |
-| HTTP/3   | QUIC over UDP; multiplexed reliable streams                | Stream delivery avoids TCP's cross-stream ordering constraint |
-
-Your application normally uses the same fetch API for all three. The browser and server choose an available protocol; JavaScript does not opt into HTTP/2 by adding a request header.
-
-Enable the Protocol column in the browser's Network panel when investigating actual traffic. Do not assume a readable HTTP/1.1 example is a literal capture of an HTTP/2 exchange.
+The task board then calls `/api/tasks` on its own origin, `http://localhost:4200`, and the dev server passes the request on to `http://localhost:3000`. The browser only ever talks to one origin, so CORS never comes up. That only covers development; in production, a server or proxy on the same origin has to do the same job, or the API needs real CORS headers.
 
 ## A debugging checklist
 
-Work from the outside inward:
+Back to the console line from the opening. Work from the outside in, and each step points at one of the four failures:
 
-1. **Did a network request happen?** Check the URL, DNS, connection, TLS, cancellation, and browser policy messages. A cache or service worker can also satisfy a request without a new network exchange.
-2. **Was there a preflight?** If OPTIONS failed, inspect its status and allow headers before debugging a POST that never happened.
-3. **Did the actual operation reach the server?** Use server logs where necessary. A CORS error is not proof of non-execution.
-4. **What was the HTTP status?** Fetch does not reject merely because the server returned a 4xx or 5xx response.
-5. **Could JavaScript access the response?** Compare the origin, credentials mode, and CORS response headers, including on error responses.
-6. **Was the body valid for the reader?** Check for empty bodies, HTML error pages, malformed JSON, or an already-consumed stream.
-7. **Where was the time spent?** Separate queuing and connection setup from server latency, download, parsing, and UI work.
+1. **Did a request happen at all?** *(Failure 1: never connected.)* Check the URL, DNS, the connection, TLS, and whether the request was cancelled. A cache or a service worker can also answer without touching the network.
+2. **Was there a preflight, and did it pass?** *(Failure 3.)* If the OPTIONS request failed, fix its status and allow headers first. The POST never happened.
+3. **Did the real request reach the server?** Check the server logs. A CORS error doesn't prove the server did nothing.
+4. **What was the status?** *(Failure 2: an error status.)* `fetch` resolves for `4xx` and `5xx`, so look at `response.status`.
+5. **Could your code read the response?** *(Failure 3: CORS.)* Compare the origin, the credentials mode, and the `Access-Control-*` headers, including on error responses.
+6. **Was the body what the reader expected?** *(Failure 4: parsing.)* Look for an empty body, an HTML error page, malformed JSON, or a body that was already read.
+7. **Where did the time go?** The timing view in the Network panel separates waiting for a connection, waiting for the server, and downloading. A slow request isn't automatically slow JavaScript, and a fast response doesn't mean the UI handled it quickly.
 
-If curl succeeds while the browser fails, that narrows the investigation but does not prove the API is correctly configured for browser access. curl does not enforce the browser's CORS checks or cookie policies.
+If curl succeeds while the browser fails, you've learned the server works, not that its CORS headers are right. curl doesn't apply CORS or the browser's cookie rules.
 
-## Takeaways
-
-- TCP carries ordered bytes; HTTP defines message structure and semantics.
-- HTTP/1.1 needs explicit framing to reuse connections safely.
-- Fetch exposes a response in stages, and HTTP errors differ from promise rejection.
-- CORS controls browser sharing; it is neither authentication nor a guarantee that an operation was not sent.
-- Preflight permission and actual-response permission are separate checks.
-- HTTP/2 and HTTP/3 change the delivery model, not the meaning of your API's methods and statuses.
+So when Save fails, "the request failed" stops being the whole story. The Network panel tells you whether the request went out and which status came back, the console tells you whether CORS blocked the read, and `response.json()` tells you whether the body was usable. Find the layer that broke, and the fix belongs to that layer.
 
 ## Sources and further reading
 
 - [RFC 9110: HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html)
 - [RFC 9112: HTTP/1.1 message syntax, framing, and connections](https://www.rfc-editor.org/rfc/rfc9112.html)
-- [Fetch standard: CORS protocol](https://fetch.spec.whatwg.org/#http-cors-protocol)
-- [Fetch standard: credentials](https://fetch.spec.whatwg.org/#credentials)
 - [RFC 9113: HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html)
 - [RFC 9114: HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html)
+- [Fetch standard: CORS protocol](https://fetch.spec.whatwg.org/#http-cors-protocol)
+- [Fetch standard: credentials](https://fetch.spec.whatwg.org/#credentials)
+- [MDN: Cross-Origin Resource Sharing](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS)
+- [MDN: Same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy)
+- [Angular: setting up HttpClient](https://angular.dev/guide/http/setup)
+- [Angular: proxying to a backend server](https://angular.dev/tools/cli/serve)

@@ -1,7 +1,8 @@
 ---
 title: "From changing elements to managing application state"
-description: "Follow the same task interface through native JavaScript, jQuery, and Angular to see what each simplifies, who coordinates updates, and what an SPA adds."
+description: "Build the same task list with native JavaScript, jQuery, and Angular to see who keeps the count, the rows, and the filter in agreement."
 pubDate: "2026-10-02"
+updatedDate: "2026-10-15"
 tags:
   - javascript
   - jquery
@@ -9,51 +10,50 @@ tags:
   - frontend
 ---
 
-A task's checkbox is checked, but the remaining count still includes it. The Active filter still shows it too. The individual operations worked; the interface as a whole disagrees with itself.
+You check a task's checkbox, but the line above the list still says "Remaining tasks: 2". You switch the filter to Active, and the finished task is still there. Each piece of code did its own job: the checkbox changed, and the task object was updated. But nothing updated the count or the filtered list, so the page now disagrees with itself.
 
-This is a useful way to understand frontend evolution. The question is not just “How do we make clicking work?” It is also:
+That bug runs through this whole article:
 
 > When one action affects several parts of the interface, who keeps them consistent?
 
-We will reuse the task interface from [HTML, the DOM, and events](/dump/blog/html-dom-and-events/). First we will change elements directly, then use jQuery, then describe the interface with Angular. The [values and identity article](/dump/blog/values-references-and-identity/) explains the shared objects behind these updates.
+You'll build the same small task list three times: with the browser's own DOM methods, with jQuery, and with Angular. Each version fixes the bug, and each one puts the fixing code in a different place.
 
-Here, **native** means using operations provided directly by the browser, without adding a DOM library. This is not a replacement ladder: native JavaScript is not inherently disorganized, jQuery is not an application-state framework, and using Angular does not automatically mean building a single-page application.
+You'll need the basics from [HTML, the DOM, and events](/dump/blog/html-dom-and-events/): what an element, a property, and an event listener are. The Angular part also leans on [values, references, and identity](/dump/blog/values-references-and-identity/), and the text explains the one idea it borrows.
+
+One note before you start. The three versions aren't a ladder where each tool replaces the last. Plenty of good code today is plain JavaScript, and plenty of working apps still run jQuery. The comparison shows what each tool takes off your plate and what it leaves on it. Here, **native** means using only what the browser provides, with no library added. The examples have no server, so nothing survives a reload. They were checked with jQuery 4.0.0 and Angular 22.2.1 in Chromium.
 
 ## Contents
 
-1. [The browser already provides behavior](#the-browser-already-provides-behavior)
-2. [Direct DOM code gives concrete instructions](#direct-dom-code-gives-concrete-instructions)
-3. [jQuery simplifies browser operations](#jquery-simplifies-browser-operations)
-4. [More behavior creates a coordination problem](#more-behavior-creates-a-coordination-problem)
-5. [Describe the relationship between state and view](#describe-the-relationship-between-state-and-view)
-6. [An SPA expands what the client owns](#an-spa-expands-what-the-client-owns)
-7. [Compare responsibilities, not winners](#compare-responsibilities-not-winners)
+1. [What the browser already does](#what-the-browser-already-does)
+2. [Build one task row with DOM methods](#build-one-task-row-with-dom-methods)
+3. [The same row with jQuery](#the-same-row-with-jquery)
+4. [Keep the count, rows, and filter in agreement](#keep-the-count-rows-and-filter-in-agreement)
+5. [Describe the view with Angular](#describe-the-view-with-angular)
+6. [What Angular takes over, and what it doesn't](#what-angular-takes-over-and-what-it-doesnt)
+7. [Where single-page applications fit](#where-single-page-applications-fit)
+8. [Compare the three versions](#compare-the-three-versions)
 
-## The browser already provides behavior
+## What the browser already does
 
-Before an application framework runs, the browser already knows how to do many things:
+Before you write any JavaScript, the browser already knows how to:
 
-- Follow a link to another document.
-- Let someone type into an input and operate it with the keyboard.
-- Change a checkbox's checked state when it is activated.
-- Validate and submit a form according to its HTML.
+- Follow a link to another page.
+- Let someone type into an input and move between controls with the keyboard.
+- Check and uncheck a checkbox.
+- Check a form's required fields and submit it.
 
-A server can send a page containing links and forms, receive a submitted request, save data, and respond with another page. That is an interactive application, even without client-side Angular, React, or jQuery.
+A server can build a whole application from those pieces alone. It sends HTML with links and forms, receives each submitted form, saves the data, and answers with a new page. JavaScript can then improve one part of that page, for example by adding a task without loading a new page. It doesn't have to take over everything else.
 
-**Server-generated** means that the server produces the HTML before sending it. It does not mean that the resulting page cannot respond to interaction.
+### The task list you'll build
 
-JavaScript can enhance one part of that arrangement. For example, it can handle a task form without replacing the document. It need not take responsibility for navigation or every other element on the page.
-
-### One interface, several related results
-
-Our example will support four operations:
+The example supports four operations:
 
 1. Add a task.
-2. Mark a task complete or active again.
+2. Mark a task complete, or active again.
 3. Show all, active, or completed tasks.
-4. Display how many tasks remain active, regardless of the selected filter.
+4. Show how many tasks are still active, whichever filter is selected.
 
-Here is the shared HTML for the native JavaScript and jQuery versions. The Angular version will describe the equivalent structure in its template.
+Here's the HTML that the native and jQuery versions share. The Angular version describes the same structure in its template.
 
 ```html
 <!doctype html>
@@ -81,7 +81,7 @@ Here is the shared HTML for the native JavaScript and jQuery versions. The Angul
       </select>
 
       <p id="remaining-count" aria-live="polite"></p>
-      <ul id="task-list" role="list"></ul>
+      <ul id="task-list"></ul>
       <p id="empty-message">No tasks to show.</p>
     </main>
     <!-- Load one implementation here, after the controls. -->
@@ -89,15 +89,15 @@ Here is the shared HTML for the native JavaScript and jQuery versions. The Angul
 </html>
 ```
 
-The labels name the controls. Each generated row will contain a checkbox inside a label with the task title. The remaining count is a polite live region: assistive tools can announce its changes without interrupting the current announcement.
+What to notice:
 
-The examples have no backend and do not save across reloads. Without their submit handler, this form can make a normal GET request, but there is no server here implementing task creation. Native form submission is a browser capability, not proof that a particular endpoint saves data.
+- Each `<label>` names its control, so a screen reader says "Task title, edit text" instead of just "edit text".
+- `aria-live="polite"` on the count asks screen readers to read out its new text when it changes, without interrupting what they're already reading. The [accessibility article](/dump/blog/accessibility-in-practice/) covers these live regions.
+- Without any JavaScript, submitting this form reloads the same page with `?title=…` added to the address. No server here saves tasks, so each script below stops that submission and handles the new task itself.
 
-The first two short scripts below intentionally implement only one row. The complete versions follow later. Try each script separately with fresh HTML; do not load all implementations into one page.
+## Build one task row with DOM methods
 
-## Direct DOM code gives concrete instructions
-
-To create one task row, we can ask the browser to make the elements and attach a listener:
+To create one task row, you ask the browser to make the elements and attach a listener:
 
 ```js
 const task = { title: "Read the DOM article", done: false };
@@ -124,27 +124,33 @@ checkbox.addEventListener("change", () => {
 
 Follow the operations:
 
-1. `querySelector` finds existing elements.
-2. `createElement` creates new DOM elements that are not yet in the page.
-3. Assigning `textContent` puts the title into a text node, not an HTML fragment.
-4. `append` connects the new elements to each other and to the list. The space string becomes text between the checkbox and title.
-5. The listener reads the checkbox's current `checked` property and writes it into the task object.
+1. `querySelector` finds an element that's already in the page.
+2. `createElement` creates a new element that isn't in the page yet.
+3. Assigning `textContent` puts the title in as plain text. If a title contains `<em>`, the page shows those characters instead of turning them into HTML.
+4. `append` puts the new elements inside each other and finally inside the list. The `" "` string becomes a space between the checkbox and the title.
+5. The listener reads the checkbox's `checked` property and copies it into the task object.
 
-The browser itself changes the checkbox when activated. Our handler copies that choice into application data.
+The browser checks and unchecks the box by itself. Your handler only copies that choice into your data.
 
-These are **imperative** instructions: create this element, put this text in it, attach this handler, and insert this row. Imperative means that the code specifies operations to perform.
+Code like this is **imperative**: it lists the steps to perform. Create this element, put this text in it, attach this handler, insert this row. For a small enhancement, that's easy to read and maintain.
 
-There is nothing inherently wrong with this. A small enhancement can be easy to read and maintain using ordinary browser APIs.
+To try it, save the script as `tasks.js` next to the HTML file and replace the comment at the end of `<body>` with:
 
-But this script already has a deliberate omission: checking the task changes `task.done`, yet the count still says one task remains. The filter and empty message are not wired up either. Creating the row is not the same as implementing the complete interaction.
+```html
+<script type="module" src="./tasks.js"></script>
+```
 
-## jQuery simplifies browser operations
+`type="module"` loads the file as a JavaScript module. A module runs after the browser has read the whole HTML document, so the elements the script looks for already exist, and its top-level variables stay inside that file instead of becoming globals. Chromium-based browsers refuse to load a module script into a page opened straight from disk (a `file://` address), so serve the folder with a small local server, such as `python3 -m http.server`, and open the address it prints.
 
-Historically, developers faced differences in browser APIs and behavior as well as repetitive DOM work. jQuery offered a common, convenient way to select elements, change them, handle events, and make background requests.
+Now check the box. `task.done` changes, but the count still says one task remains, and the filter does nothing yet. That gap is deliberate: creating a row isn't the same as implementing the whole interaction.
 
-An **API** is the set of operations a library exposes for other code to call. jQuery's `$` function is an entry point into its API. A selector such as `$("#task-list")` returns a jQuery object wrapping the matched DOM elements, with methods for operating on them.
+## The same row with jQuery
 
-Here is the same intentionally incomplete row example using jQuery:
+For years, browsers disagreed on DOM details, and the standard DOM methods were long-winded. jQuery gave developers one short, consistent way to find elements, change them, and handle events.
+
+Everything goes through the `$` function. `$("#task-list")` finds the matching elements and returns a **jQuery object**: a wrapper around those elements with methods for changing them.
+
+Here's the same incomplete row with jQuery:
 
 ```js
 const task = { title: "Read the DOM article", done: false };
@@ -166,37 +172,24 @@ $checkbox.on("change", () => {
 });
 ```
 
-Here, `$` followed by an HTML string such as `"<li>"` creates an element rather than selecting an existing one. The `$` at the start of a variable name is only a naming convention reminding us that the value is a jQuery wrapper.
+What to notice:
 
-The methods express familiar operations:
+- `$` with an HTML string such as `"<li>"` creates a new element instead of finding one.
+- The `$` at the start of a variable name is only a naming habit. It reminds you that the value is a jQuery wrapper.
+- `.text(...)` sets text content, `.prop(...)` reads or writes a DOM property such as `checked`, `.on(...)` adds an event handler, and `.append(...)` inserts content.
 
-- `.text(...)` sets text content.
-- `.prop(...)` reads or writes a DOM property, such as the checkbox's current checked state.
-- `.on(...)` registers an event handler.
-- `.append(...)` inserts content.
-
-The shorter element-creation and manipulation calls reduce some repetitive work. They do not create a new relationship between `task.done` and the count. The count is still wrong after completion because our application never told jQuery to change it.
-
-### Convenience is not application-state ownership
-
-jQuery's capabilities also include Ajax and an extension mechanism. **Ajax** refers to background requests made by JavaScript without a full document navigation; it does not require the response to be XML despite the historical name.
-
-Plugins can build extra behavior around jQuery. A date picker supplied by another library is not the same thing as jQuery itself. Its state and cleanup rules depend on that library.
-
-Neither convenient selection nor a request helper decides:
+The code is shorter, but the count is still wrong after you check the box. Nothing told jQuery to change it. jQuery makes each DOM operation easier, but it doesn't decide:
 
 - Which object represents a task.
-- Whether completing it changes the count.
-- Whether it remains visible under the Active filter.
-- How to handle an unsuccessful save.
+- Whether completing a task changes the count.
+- Whether the task stays visible under the Active filter.
+- What happens when saving a task fails.
 
-Those are application responsibilities. jQuery can help carry out the operations, but it does not automatically observe our task object and maintain all related DOM values.
+Those decisions belong to your application code, whichever tool carries out the DOM operations.
 
-For the runnable examples, the checked baseline is jQuery 4.0.0. Older applications may use other versions with different browser support and available APIs. A historical compatibility benefit is not a promise that today's release supports every old browser.
+## Keep the count, rows, and filter in agreement
 
-## More behavior creates a coordination problem
-
-Return to the checkbox. A completed task affects at least three visible results:
+Go back to the checkbox. Completing one task affects at least three things on the page:
 
 ```text
 checkbox activation
@@ -207,31 +200,27 @@ task.done changes
        └──→ Active filter no longer shows this row
 ```
 
-Updating only one result leaves the interface inconsistent. As adding, deleting, or editing gains more entry points, scattered update instructions become easier to miss.
+Update only one of them and the page disagrees with itself. As you add more ways to change a task, such as deleting or renaming, you get more places where one of those updates can be forgotten. That's a coordination problem. Shorter DOM calls don't fix it.
 
-This is a coordination problem, not necessarily a DOM-API problem. Writing the same incomplete handler with fewer characters does not repair it.
+### Pick one place to store each value
 
-### Give each value an owner
+Right now, "is this task done?" lives in two places: the checkbox's `checked` property and `task.done`. If they can disagree, you have to decide which one to believe. The one you believe is the **source of truth**. Everything else, like the count or whether a row is visible, gets calculated from it.
 
-A **source of truth** is the representation we treat as authoritative for a particular value. Other representations are derived from it rather than competing with it.
+Different choices can work. A tiny page could count the checked boxes in the DOM and skip the task objects entirely. What matters is that each value has exactly one place you read it from.
 
-Different arrangements can work:
+In the full examples:
 
-- A small interface can derive its count from the checkbox states in the DOM.
-- Another can keep task data in JavaScript and derive rows and counts from that data.
-- A form can keep its unsaved input text in a native control while accepted tasks live in application data.
+- The task records and the selected filter live in JavaScript variables. They're the source of truth.
+- The checkboxes, the rows' visibility, and the count text are calculated from them.
+- The title someone is still typing stays in the input until they submit it. Only then does it become a task record.
 
-The last is an intentional combination, not automatically a design flaw. Ownership must be clear for each value; it need not mean putting every bit of browser interaction state into one global store.
+### One render function for the whole list
 
-Our complete examples use task records and the selected filter as application state. The text being entered remains in the input until submitted. Completing a checkbox updates its task record before rendering the related results.
+You can fix the bug in plain JavaScript. Each handler changes the data, then calls one `render()` function that brings every affected part of the page up to date.
 
-### Centralize rendering without a framework
+The complete native version replaces the short script. It comes in three pieces; put them in `tasks.js` in this order.
 
-We can solve the missing-update problem in plain JavaScript. Let handlers change state and call one `render()` function that applies the relevant rules.
-
-A **Map** stores values under keys. Here, a map connects each task ID to its existing row and checkbox. It is a cache of DOM references, not a competing copy of the task data.
-
-This complete native implementation replaces the earlier short script:
+First, the elements, the state, and a function that creates one row:
 
 ```js
 const form = document.querySelector("#task-form");
@@ -268,7 +257,18 @@ function createRow(task) {
 
   return { element, checkbox };
 }
+```
 
+What to notice:
+
+- `tasks` and `filter` are the source of truth.
+- A **Map** stores values under keys. `rows` maps each task ID to that task's `<li>` and checkbox, so `render()` can find an existing row instead of building a new one. It only remembers elements; it doesn't hold its own copy of the task data.
+- The checkbox handler changes `task.done`, then calls `render()`. It doesn't touch the count or the filter itself.
+- If completing a task hides its row (say the Active filter is selected), the checkbox that had keyboard focus disappears. The handler moves focus to the filter, so a keyboard user isn't left on a control that's gone.
+
+Next, the function that brings the page up to date:
+
+```js
 function render() {
   let remaining = 0;
   let visibleCount = 0;
@@ -303,7 +303,17 @@ function render() {
   remainingCount.textContent = "Remaining tasks: " + remaining;
   emptyMessage.hidden = visibleCount > 0;
 }
+```
 
+What to notice:
+
+- The count is calculated from **all** tasks, before the filter is applied. Switching filters doesn't change how many tasks remain.
+- Each row is created once, the first time `render()` sees its task, and reused afterwards. So a checkbox stays the same element, and keeps keyboard focus, while its row is visible.
+- Rows that the filter excludes stay in the list with the `hidden` attribute set, which the browser displays as `display: none`. If you later write CSS that sets `display` on the rows, that rule wins over `hidden`, so make sure hidden rows still disappear.
+
+Last, the handlers for the form and the filter:
+
+```js
 titleInput.addEventListener("input", () => {
   titleInput.setCustomValidity("");
 });
@@ -340,23 +350,60 @@ filterSelect.addEventListener("change", () => {
 render();
 ```
 
-The renderer recalculates the remaining count from **all** tasks, then decides which rows the filter shows. Switching filters does not change how many tasks remain to be done.
+What to notice:
 
-Rows are created once and reused. Updating their properties avoids replacing the whole list after every interaction. In particular, a checkbox keeps its DOM identity while its row remains visible.
+- `event.preventDefault()` stops the browser's own form submission, the page reload described earlier.
+- `required` already rejects an empty title, but a title of only spaces passes it. `trim()` removes the spaces around the text. If nothing is left, `setCustomValidity` marks the input invalid with that message and `reportValidity` shows the browser's usual validation bubble. Typing clears the message again, so the next attempt is checked from scratch.
+- Every handler follows the same pattern: change `tasks` or `filter`, then call `render()`.
 
-When completing a task hides its focused row, the handler moves focus to the filter rather than leaving someone on a disappearing control. This is part of the interaction, not a styling choice.
+That pattern is the fix for the opening bug. `render()` is the only code that writes the count, the checkboxes, and which rows are visible, so they can't drift apart.
 
-The form still uses browser validation. `trim()` removes surrounding whitespace. A spaces-only title is rejected through the browser's `setCustomValidity` and `reportValidity` operations; editing the input clears that custom error so the next attempt can be validated again.
+It's a small renderer written for these three operations, though. Deleting a task would need code that removes its row and its `rows` entry. Renaming one would need code that refreshes the title text.
 
-Task titles go through `textContent`, so a title containing `<em>text</em>` is displayed as that text rather than treated as new HTML. State coordination does not remove the need to handle user input safely.
+### The jQuery version
 
-The native renderer hides rows through `hidden` using the default HTML layout. If you later add CSS that explicitly sets a row's `display`, preserve the hiding behavior too; an author style can override the browser's default `[hidden]` styling.
+jQuery can follow the same plan. The data, the `rows` map, and the order of operations stay identical. Here's `createRow` with jQuery:
 
-This is a small renderer owned by our application, not a new general-purpose rendering framework. It handles the operations we implemented. Adding task deletion would require removing the corresponding rows and references; adding title editing would require refreshing the title text.
+```js
+function createRow(task) {
+  const $element = $("<li>");
+  const $label = $("<label>");
+  const $checkbox = $("<input>").prop("type", "checkbox");
+  const $title = $("<span>").text(task.title);
 
-### The same coordination with jQuery
+  $label.append($checkbox, " ", $title);
+  $element.append($label);
 
-jQuery can implement the same arrangement. Save this complete version as `tasks.js` and use it instead of the native script:
+  $checkbox.on("change", () => {
+    task.done = $checkbox.prop("checked");
+    render();
+
+    const rowHidden = $element.prop("hidden");
+    if (rowHidden) {
+      $filterSelect[0].focus();
+    }
+  });
+
+  return { $element, $checkbox };
+}
+```
+
+The rest of the script makes the same swaps:
+
+| Native                                         | jQuery                                          |
+| ---------------------------------------------- | ----------------------------------------------- |
+| `document.querySelector("#task-list")`         | `$("#task-list")`                               |
+| `row.checkbox.checked = task.done`             | `row.$checkbox.prop("checked", task.done)`      |
+| `row.element.hidden = !visible`                | `row.$element.prop("hidden", !visible)`         |
+| `remainingCount.textContent = text`            | `$remainingCount.text(text)`                    |
+| `filterSelect.value` and `titleInput.value`    | `$filterSelect.val()` and `$titleInput.val()`   |
+| `form.addEventListener("submit", handler)`     | `$form.on("submit", handler)`                   |
+| `titleInput.reportValidity()`                  | `$titleInput[0].reportValidity()`               |
+
+`.val()` reads an input's or select's value, and `.val(newValue)` writes it. jQuery has no methods for `setCustomValidity` and `reportValidity`, so the code calls them, and `focus()`, on the DOM element itself. `[0]` gets that element: the first DOM element inside the jQuery wrapper. The wrapper and the element are two different objects.
+
+<details>
+<summary>The complete jQuery <code>tasks.js</code></summary>
 
 ```js
 const $form = $("#task-form");
@@ -464,44 +511,172 @@ $filterSelect.on("change", () => {
 render();
 ```
 
-`.val()` reads or writes the input's value. `[0]` accesses the first native element wrapped by a jQuery object; we use it for native focus and validation operations. The wrapper and the DOM element are related, but are not the same object.
+</details>
 
-For the native version, save its script as `tasks.js` and load it at the marked position with `<script type="module" src="./tasks.js"></script>`.
+To run it, download the jQuery 4.0.0 browser build, save it next to the page as `jquery.min.js`, and load it before your script, because your code calls `$` as soon as it runs:
 
-For the jQuery version, place a downloaded jQuery 4.0.0 browser distribution beside the page as `jquery.min.js`. At the marked position, load `<script src="./jquery.min.js"></script>` before `<script type="module" src="./tasks.js"></script>`. The library must be available before code calls `$`.
+```html
+<script src="./jquery.min.js"></script>
+<script type="module" src="./tasks.js"></script>
+```
 
-The data model, update rules, and renderer still belong to our application. jQuery changes how we carry out browser operations, not who defines the relationship between completion, count, and visibility.
+So jQuery changes how each line talks to the browser. The data, the update rules, and `render()` are still your code, and you're still the one keeping the count, the checkboxes, and the visible rows in agreement.
 
-## Describe the relationship between state and view
+## Describe the view with Angular
 
-Now consider what we want the interface to show:
+Look at what the page should show for any list of tasks:
 
-- One row for each task matching the selected filter.
-- A checkbox whose state matches that task's `done` value.
-- A count derived from tasks that are not done.
-- An empty message when there are no visible tasks.
+- One row for each task that matches the selected filter.
+- A checkbox that's checked when that task's `done` is `true`.
+- A count of the tasks that aren't done.
+- An empty message when no rows are visible.
 
-Those descriptions can become rendering rules instead of being repeated as DOM writes in each event handler.
+In the native version, those rules are spread across `render()` as DOM writes. Angular lets you write them down once, as a description of the page, and does the DOM writes for you. That's **declarative rendering**: you describe what the page should look like for the current data, and the framework works out which DOM operations get it there.
 
-This is **declarative rendering**: describe the desired view for a given state, and let the rendering system carry out the DOM operations needed to produce it.
+Three Angular words come up from here on. A **template** is the HTML-like text that describes the page, with placeholders for data. A **component** is a TypeScript class plus its template; below, it's the `TaskBoard` class. The **view** is the actual DOM that Angular builds from the template.
 
-The **view** is the interface produced from that state. A **template** is a description of its structure and dynamic values. A **component** groups a piece of that description with its behavior and state behind a named boundary.
+Declarative rendering doesn't mean no step-by-step code runs. Angular still calls DOM methods like `createElement` behind the scenes, and your event handlers are still ordinary step-by-step code. What changes is who writes the code that keeps the page matching the data.
 
-Declarative rendering does not mean that no imperative code runs. Angular still performs DOM operations, and our event handlers still contain ordinary instructions. The difference is who maintains the declared state-to-view relationships.
+### Template syntax you'll see
 
-### An Angular task board
+- `{{ remaining() }}` puts a value into text.
+- `[checked]="task.done"` keeps the checkbox's `checked` property equal to `task.done`.
+- `(change)="..."` runs the code in quotes when the element fires a `change` event.
+- `@for (task of visibleTasks(); track task.id)` repeats a row for each task. `track task.id` tells Angular which row belongs to which task.
+- `#titleInput` gives the input element a name that other code in the template can use, for example to pass the element to a method.
 
-Before the full example, here is the template syntax we will use:
+### Signals
 
-- `{{ remaining() }}` places a calculated value into text.
-- `[checked]="task.done"` binds the checkbox's DOM property to a value.
-- `(change)="..."` runs a handler when Angular receives that event.
-- `@for (...; track task.id)` describes repeated rows and identifies them by task ID.
-- `#titleInput` names a template reference to the native input, which a handler can use.
+The component stores its data in signals. A **signal** is a box holding a value. You read it by calling it, as in `tasks()`, and change it with `.set(newValue)` or `.update(fn)`, where `fn` receives the current value and returns the next one. Angular remembers which parts of the template read each signal and updates those parts when the signal changes.
 
-A **signal** holds a value and notifies consumers when a recognized change is written. `computed(...)` derives and caches a value from the signals it reads. Calling a signal, such as `tasks()`, reads its value; `.update(...)` uses a function's returned value as the next value. The previous article explains why these writes must respect [value identity](/dump/blog/values-references-and-identity/#connect-the-model-to-angular).
+`computed(...)` creates a read-only signal whose value is calculated from other signals. `remaining` below reads `tasks()`, so Angular recalculates it when `tasks` changes, and reuses the last result otherwise.
 
-Here is the complete component, checked with Angular 22.2.1. Put it in `task-board.ts` in an Angular application:
+### What you'll see in the TypeScript
+
+- `type TaskFilter = "all" | "active" | "completed"` is a **union type**: a `TaskFilter` can only be one of those three strings.
+- `interface Task { ... }` lists the fields every task object has. Types like these only exist for the TypeScript compiler; they're removed from the JavaScript the browser runs.
+- `signal<Task[]>([])` creates a signal that holds an array of tasks and starts empty. The type in angle brackets says what the signal holds.
+- `@Component({ ... })` is a **decorator**: it attaches the selector and template to the class that follows it.
+- `this` inside a method means the component instance, so `this.tasks` is the component's `tasks` signal.
+- `...` is **spread syntax**. `[...current, task]` builds a new array with every item of `current` followed by `task`. `{ ...task, done }` builds a new object with all of `task`'s properties, then sets `done` to the new value.
+
+Spread matters here because a signal decides whether its value changed by comparing the old and new value with `Object.is`, which checks for the same object, not the same contents. A new array counts as a change. If you pushed into the existing array instead, the signal would still hold the same array, and Angular wouldn't update anything. The [values article](/dump/blog/values-references-and-identity/#connect-the-model-to-angular) walks through why.
+
+### The task board component
+
+The component lives in one file, `task-board.ts`. Here it is in three pieces, each followed by what to notice. The complete file comes after them.
+
+First, the data. These are members of the `TaskBoard` class:
+
+```ts
+readonly tasks = signal<Task[]>([]);
+readonly filter = signal<TaskFilter>("all");
+private nextId = 1;
+
+readonly remaining = computed(() => {
+  let count = 0;
+  for (const task of this.tasks()) {
+    if (!task.done) {
+      count += 1;
+    }
+  }
+  return count;
+});
+
+readonly visibleTasks = computed(() => {
+  const visible: Task[] = [];
+  const filter = this.filter();
+
+  for (const task of this.tasks()) {
+    if (filter === "active" && task.done) {
+      continue;
+    }
+    if (filter === "completed" && !task.done) {
+      continue;
+    }
+    visible.push(task);
+  }
+
+  return visible;
+});
+```
+
+What to notice:
+
+- `tasks` and `filter` are the source of truth, just like the `tasks` array and `filter` variable in the native version.
+- `remaining` and `visibleTasks` hold the same rules as the native `render()`: count the tasks that aren't done, then pick the tasks the filter shows. But they only calculate values. Neither one touches the DOM.
+
+Next, the part of the template that shows the filter and the list:
+
+```html
+<select
+  #filterSelect
+  id="task-filter"
+  [value]="filter()"
+  (change)="setFilter(filterSelect.value)"
+>
+  <option value="all">All</option>
+  <option value="active">Active</option>
+  <option value="completed">Completed</option>
+</select>
+
+<p id="remaining-count" aria-live="polite">Remaining tasks: {{ remaining() }}</p>
+<ul id="task-list">
+  @for (task of visibleTasks(); track task.id) {
+    <li>
+      <label>
+        <input
+          #checkbox
+          type="checkbox"
+          [checked]="task.done"
+          (change)="setDone(task, checkbox.checked, filterSelect)"
+        />
+        <span>{{ task.title }}</span>
+      </label>
+    </li>
+  }
+</ul>
+<p id="empty-message" [hidden]="visibleTasks().length > 0">No tasks to show.</p>
+```
+
+What to notice:
+
+- This is the same HTML as before, plus bindings. In the file, it sits in the `template` string of `@Component({ ... })`.
+- The count, the rows, each checkbox's `checked`, and the empty message are written once, as expressions that read signals. Nothing in the component writes them again.
+- The checkbox's `(change)` passes three things to `setDone`: the task, the checkbox's new `checked` value, and the `<select>` element, through its `#filterSelect` name.
+
+Last, the method that runs when a checkbox changes:
+
+```ts
+setDone(taskToChange: Task, done: boolean, filterSelect: HTMLSelectElement): void {
+  this.tasks.update((current) => {
+    const next: Task[] = [];
+    for (const task of current) {
+      if (task.id === taskToChange.id) {
+        next.push({ ...task, done });
+      } else {
+        next.push(task);
+      }
+    }
+    return next;
+  });
+
+  const hideActiveTask = this.filter() === "active" && done;
+  const hideCompletedTask = this.filter() === "completed" && !done;
+  if (hideActiveTask || hideCompletedTask) {
+    filterSelect.focus();
+  }
+}
+```
+
+What to notice:
+
+- `setDone` builds a new array and replaces the changed task with a new object made by `{ ...task, done }`. That new array is what tells the `tasks` signal something changed.
+- If the current filter is about to remove the row, it moves focus to the filter, as the native handler did. Angular hasn't updated the page yet when this runs, so the row is still on screen, and there's no `hidden` flag to check the way the native code did. The method works it out from the filter and the new `done` value instead.
+- `addTask` and `setFilter` follow the same idea: `addTask` stores `[...current, task]`, and `setFilter` calls `this.filter.set(value)`. Neither one updates the page itself.
+
+<details>
+<summary>The complete <code>task-board.ts</code></summary>
 
 ```ts
 import { Component, computed, signal } from "@angular/core";
@@ -546,7 +721,7 @@ interface Task {
       </select>
 
       <p id="remaining-count" aria-live="polite">Remaining tasks: {{ remaining() }}</p>
-      <ul id="task-list" role="list">
+      <ul id="task-list">
         @for (task of visibleTasks(); track task.id) {
           <li>
             <label>
@@ -646,111 +821,76 @@ export class TaskBoard {
 }
 ```
 
-Here, `interface Task` describes each task's fields for TypeScript, and `TaskFilter` limits the filter's accepted values. `this` accesses the current component instance. `@Component` supplies Angular with the selector and template for that class.
+</details>
 
-To use this as an application's root component, import `bootstrapApplication` from `@angular/platform-browser` and `TaskBoard` from `./task-board` in its entry point, then call `await bootstrapApplication(TaskBoard);`. Bootstrapping means asking Angular to start the application and create its root component. The host page must contain `<task-board></task-board>`.
+To make it the application's root component, start it from `main.ts`. **Bootstrapping** means asking Angular to start the application and create that first component:
 
-An existing application can instead import the component into its parent and use that element in the parent's template. This is component code for an Angular project, not a script to paste directly into the browser console.
+```ts
+import { bootstrapApplication } from "@angular/platform-browser";
+import { TaskBoard } from "./task-board";
 
-### Follow one completion through the rules
+bootstrapApplication(TaskBoard);
+```
 
-When a checkbox changes:
+The page's `index.html` needs a `<task-board></task-board>` element; Angular renders the component inside it. In an existing application, import `TaskBoard` into a parent component instead and use `<task-board />` in the parent's template.
 
-1. The template's event binding calls `setDone` with the task and the checkbox's choice.
-2. The method creates a new task array, replacing the changed task object while retaining the other task objects.
-3. The signal write makes its derived values eligible to recalculate.
-4. Angular evaluates the relevant template work and updates the count and rendered rows.
+### Follow one completion through the code
 
-We did not write a selector to find the remaining-count paragraph or maintain a map of row elements. We declared the count in the template and identified the repeated rows with `track task.id`.
+Here's what happens when you check a task's box:
 
-The ID connects a task to its rendered row even when the task is represented by a new object. That is the distinction between domain identity and object identity from the previous article. Angular can reuse a matching row rather than rebuilding the entire list.
+1. The `(change)` binding calls `setDone(task, checkbox.checked, filterSelect)`.
+2. `setDone` builds a new array. The changed task becomes a new object with the new `done` value; every other task is the same object as before.
+3. `this.tasks.update(...)` stores that array. It's a different array from the old one, so the signal records a change, and Angular marks `remaining` and `visibleTasks`, which both read `tasks()`, as out of date.
+4. Angular then updates the page. It recalculates `remaining` and `visibleTasks`, rewrites the "Remaining tasks" text, and updates the list. Under the Active filter, it removes the completed task's `<li>`.
 
-The implementations need not retain the same hidden DOM. The native and jQuery examples keep filtered rows and hide them; Angular renders the matching collection and removes rows that leave it. The observable task behavior is the same, but the DOM bookkeeping differs.
+Notice what isn't in the component: no `querySelector` for the count paragraph, and no map of row elements. The count is written once in the template, and `track task.id` does the job the `rows` map did. Even when a task is replaced by a new object, its ID stays the same, so Angular keeps that task's existing row and updates it instead of rebuilding the list.
 
-Our handlers still decide which task changes, validate input, and move focus when the edited row disappears. Native focus and validation operations are legitimate browser integration. Declarative rendering is not a ban on every direct DOM operation; the important boundary is not manually rewriting the task rows and counts that Angular's template owns.
+The DOM ends up a little different from the native version. The native and jQuery versions keep filtered-out rows in the list and hide them; Angular removes them and creates them again when the filter changes back. What the user sees is the same.
 
-### Frameworks relocate work; they do not erase it
+The handlers still call DOM methods directly: `focus()`, `setCustomValidity()`, and `reportValidity()`. That's fine. Angular has no template syntax for moving focus or showing the browser's validation bubble. The rule of thumb is to leave alone the parts the template describes: the rows, the checkboxes, and the count text. If you edit those by hand, Angular doesn't know about the change, and the page and the signals can disagree again.
 
-Angular takes responsibility for maintaining its declared text, property, event, and repeated-view relationships. The application still defines the task model, the filter rules, and what completion means.
+## What Angular takes over, and what it doesn't
 
-Older approaches also separated data from presentation. In **Model–View–Controller (MVC)** arrangements, a controller coordinates input and changes between the data model and view. **Model–View–ViewModel (MVVM)** arrangements expose view-oriented values and actions through a view model—for example, a remaining count and an add-task action. The detailed patterns differ; the need to organize state and presentation did not begin with current Angular.
+Angular keeps the template's text, properties, event listeners, and `@for` rows matching the signals. Your code still defines what a task is, how the filter works, and what completing a task means.
 
-A component also has a **lifecycle**: it is created, updated, and eventually destroyed. Angular manages its own template-bound listeners and provides integration points for setup and destruction. Resources we create ourselves—such as timers or listeners on `window`—still need intentional cleanup.
+Angular also handles cleanup for what the template creates. A component is created when it appears on the page and destroyed when it's removed, and Angular removes its template's event listeners at that point. Anything you start yourself, such as a `setInterval` timer or a listener on `window`, keeps running until you stop it. Angular gives you `DestroyRef` to run that cleanup when the component is destroyed; the [lifecycle guide](https://angular.dev/guide/components/lifecycle) shows how.
 
-That differs from our native and jQuery examples, whose handlers and caches live for the page's lifetime. If we turn them into widgets that are repeatedly mounted and removed within one document, we must design that lifecycle ourselves. Merely hiding a row does not release its listener or remove its map entry.
+The native and jQuery versions never need cleanup, because their rows and listeners live as long as the page. If you turned them into widgets that get added and removed many times on one page, you'd have to remove their listeners and `rows` entries yourself. Hiding a row doesn't do either.
 
-The framework's coordination comes with costs: dependencies, a build process, template syntax, lifecycle rules, and update semantics that the team must understand. Incorrect notification or shared-object handling can still produce stale views. See [Angular change detection](/dump/blog/angular-change-detection/) for those mechanics rather than treating a framework as a general-purpose observer of every assignment.
+Angular's help has a price: a dependency, a build step, template syntax, and rules about how signals notice changes. Break those rules, for example by changing an object inside a signal instead of replacing it, and the page goes stale again. [Angular change detection](/dump/blog/angular-change-detection/) covers how Angular decides what to update.
 
-## An SPA expands what the client owns
+## Where single-page applications fit
 
-So far, every version enhances one page. None needs a client router to add or complete a task.
+All three versions add behavior to one page. None of them needs to change what's in the address bar.
 
-A **single-page application (SPA)** keeps an application running in a document while application code handles navigation between its views. Instead of a normal link always replacing the document, a client router can interpret the destination and change the displayed application view.
+A **single-page application (SPA)** goes further: the browser loads one document, and your JavaScript handles moving between screens. When someone clicks a link inside the app, a **router**, code that maps addresses to screens, swaps the screen in place instead of letting the browser load a new page.
 
-These are separate choices:
+That hands your code more decisions. Suppose the task board becomes one screen at `/tasks`, next to a settings screen at `/settings`. Someone picks the Completed filter, opens Settings, then presses the browser's Back button. Should the board come back showing Completed? With ordinary pages, the browser and the server answer that between them. In an SPA, your code has to answer it, for example by putting the filter in the address as `/tasks?filter=completed`. [URLs as application state](/dump/blog/urls-as-application-state/) covers that choice. The same goes for loading states, where focus goes after a screen change, and which timers stop when a screen goes away.
 
-- A **rendering library or framework** helps produce and update the interface.
-- An **SPA architecture** gives the running client application responsibility for navigation and related behavior.
+Using Angular doesn't make a site an SPA. You can put an Angular component on one ordinary server-rendered page, and you can build client-side navigation without Angular. For how the first HTML of a page gets produced, see [Where HTML comes from](/dump/blog/html-rendering-methods/).
 
-A framework can be used for one widget on an otherwise ordinary page. Conversely, client-side navigation can be implemented without Angular. “Framework,” “SPA,” and “client-side rendering” are not interchangeable names.
+## Compare the three versions
 
-### Navigation creates more coordination work
+|                                           | Native JavaScript                     | jQuery                                    | Angular                                         |
+| ----------------------------------------- | ------------------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| Where the tasks live                      | A `tasks` array in your script        | A `tasks` array in your script            | A `tasks` signal in the component               |
+| Who writes the count and rows to the page | Your `render()`, with DOM methods     | Your `render()`, with jQuery methods      | Angular, from the template                      |
+| What a teammate has to learn              | DOM methods and your `render()`       | jQuery's methods and your `render()`      | Templates, signals, and how components start    |
+| What adding "delete task" takes           | Remove the row and its `rows` entry too | Remove the row and its `rows` entry too | Remove the task from the `tasks` array          |
 
-Suppose the task board becomes one view among several. The application now needs decisions about:
-
-- **URLs and history:** which state belongs in the address, and what Back or Forward should restore.
-- **Loading and errors:** what happens while a destination's data is unavailable, or its request fails.
-- **State lifetime:** what stays when leaving the board, and what starts fresh when returning.
-- **Resources:** which listeners, subscriptions, and background operations must stop when their owner disappears.
-- **Focus and page meaning:** where keyboard focus moves and how the title or navigation change is communicated.
-
-These are not reasons to reject SPAs. They are responsibilities to own deliberately rather than assuming a rendering framework settles them automatically.
-
-An SPA can also receive server-rendered initial HTML. Server rendering describes how that initial content is produced; client navigation describes what happens afterward. For static delivery, SSR, hydration, and hybrid arrangements, see [Where HTML comes from](/dump/blog/html-rendering-methods/).
-
-## Compare responsibilities, not winners
-
-The examples now implement the same task contract. Evaluate them by tracing responsibility.
-
-### Native JavaScript
-
-Our application owns the task records, filter rules, DOM-reference map, and renderer. Browser APIs perform the operations we request. A teammate can follow those ordinary instructions without learning a framework, but must maintain the relationships and any lifecycle we add.
-
-Modern native selection and event APIs reduce some historical reasons for adding jQuery just to find elements and attach handlers. This does not make native code automatically simpler at every scale; the application's organization still matters.
-
-### jQuery
-
-The application owns the same model and coordination rules. jQuery supplies convenient browser operations and event handling. A teammate must understand both those methods and the application's renderer.
-
-Existing plugins, integrations, and team knowledge can justify keeping it. Rewriting working code solely to remove a library is a different decision from selecting dependencies for a new feature. Shorter DOM statements are useful, but they do not replace a state-ownership design.
-
-### Angular
-
-The application owns the model, actions, and derived rules. Angular maintains the template's relationships to the DOM and manages the lifetime of its views and bindings.
-
-A teammate must understand the component boundary, template syntax, signal updates, and the framework's integration rules. Those costs can pay off when the interface has enough repeated, interacting behavior. They do not make every isolated enhancement require a client application framework.
-
-The important change is not “manual DOM became forbidden.” It is that rendering relationships and their maintenance acquired a different owner.
+So, back to the opening question: who keeps the count, the rows, and the filter consistent? With native JavaScript and jQuery, your `render()` function does, and you write it. With Angular, you describe those relationships once in the template, and Angular keeps them current. You still touch the DOM in all three, and jQuery and native code can stay perfectly consistent with one well-placed `render()`. The difference is where that coordinating code lives and who maintains it.
 
 ## Closing check
 
-Can you explain these cases without ranking the tools?
-
-1. A jQuery handler changes a task object, but the remaining count stays stale. What is missing?
-2. A native JavaScript app has one renderer called after each state change. Does it need a framework merely to stay consistent?
-3. Angular receives a new task array, but unchanged tasks reuse their IDs. Why does tracking IDs matter?
-4. An Angular task widget sits inside an ordinary server-generated page. Does that make the whole site an SPA?
-5. A client router removes a view with a running timer. Who must arrange the timer's cleanup?
+1. A jQuery handler changes a task object, but the remaining count stays stale. What's missing?
+2. A native app calls one `render()` function after every change. Does it need a framework to stay consistent?
+3. Why does the Angular `setDone` build a new array instead of changing `task.done` on the existing object?
 
 Check your reasoning:
 
-- A DOM convenience library does not automatically derive the count from our object. The application needs an update rule and a path that runs it.
-- No. Centralized native rendering can be a sufficient coordination strategy; judge its maintenance cost for the actual feature.
-- IDs connect domain tasks to their existing rendered rows even when object values change. They are not instructions to compare all fields.
-- No. Framework rendering and client-side navigation are separate responsibilities.
-- The resource's owner must integrate cleanup with the view's lifetime. A router transition does not make every arbitrary timer disappear automatically.
-
-For the next feature, ask where its state lives, which outputs depend on it, and who keeps those outputs consistent. That explains more than a technology's age or a shorter code sample.
+- A rule that calculates the count from the tasks, and code that runs it after the change. jQuery only carries out the DOM operations you ask for.
+- No. One renderer that every handler calls keeps it consistent. A framework becomes worth its cost when there's enough repeated, interacting UI that writing and maintaining `render()` by hand gets expensive.
+- The signal compares the old and new value by identity. A new array tells Angular that `tasks` changed; changing a property inside the same array wouldn't.
 
 ## Sources and further reading
 
@@ -760,6 +900,8 @@ For the next feature, ask where its state lives, which outputs depend on it, and
 - [jQuery: text content](https://api.jquery.com/text/)
 - [jQuery: input values](https://api.jquery.com/val/)
 - [jQuery: upgrading to 4.0 and its browser-support changes](https://jquery.com/upgrade-guide/4.0/)
+- [MDN: JavaScript modules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules)
+- [MDN: spread syntax](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Spread_syntax)
 - [Angular: template bindings](https://angular.dev/guide/templates/binding)
 - [Angular: repeated views and tracking](https://angular.dev/guide/templates/control-flow)
 - [Angular: signals and derived values](https://angular.dev/guide/signals)

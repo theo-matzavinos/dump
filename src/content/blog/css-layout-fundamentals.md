@@ -1,7 +1,8 @@
 ---
 title: "How CSS decides where things go"
-description: "Explain an element's size and position through normal flow, the box model, flexbox, grid, overflow, and positioning—then debug the layout the browser actually built."
+description: "Work out an element's size and position from normal flow, the box model, flexbox, grid, overflow, and positioning, then debug the layout the browser actually built."
 pubDate: "2026-10-02"
+updatedDate: "2026-10-15"
 tags:
   - css
   - layout
@@ -9,17 +10,17 @@ tags:
   - angular
 ---
 
-An input pushes its button outside the page. A column refuses to shrink even though its width is `1fr`. A badge appears in the corner of the page instead of the corner of its card.
+You add a task with a long title, and the Done and Remove buttons slide off the edge of the row. You give the main column `1fr` so it takes the leftover space, and it pushes past the side of the page anyway. You put a small count badge in the top-right corner of the task panel, and it shows up in the top-right corner of the whole page.
 
-It is tempting to try more CSS until the result looks right. But these problems become easier to explain when we separate three questions:
+The usual reaction is to keep changing values until the page looks right. That works until the next long title arrives. It's faster to ask three plain questions about the element that's misbehaving:
 
-1. **Arrangement:** Which rules arrange this element and its neighbors?
-2. **Size:** Which content, available space, and constraints determine its dimensions?
-3. **Reference:** Which box are its percentages or position offsets measured against?
+- What's laying it out: normal flow, flexbox, or grid?
+- Where does its width come from?
+- When it says `50%` or `top: 0`, that's 50% of what, and the top of what?
 
-We will reuse the task interface from [HTML, the DOM, and events](/dump/blog/html-dom-and-events/). This time the task data is already in the HTML. We are investigating layout, not wiring up the action buttons.
+This article answers those questions on a small task page and fixes all three bugs along the way. It reuses the task interface from [HTML, the DOM, and events](/dump/blog/html-dom-and-events/), but the tasks are already written into the HTML and the buttons don't do anything yet. The point here is where things sit on the page.
 
-You only need the basic shape of a CSS rule:
+You'll need to recognize HTML elements and attributes; the DOM article covers those. For CSS, you only need the basic shape of a rule:
 
 ```css
 .task-panel {
@@ -27,23 +28,25 @@ You only need the basic shape of a CSS rule:
 }
 ```
 
-`.task-panel` is a **selector**: it selects elements with `class="task-panel"`. Inside the braces, `padding` is a property and `16px` is its value. The declaration ends with a semicolon. We will explain the layout properties as we use them.
+`.task-panel` is a **selector**: it picks out the elements that have `class="task-panel"`. Inside the braces, `padding` is a **property** and `16px` is its **value**, and the semicolon ends that declaration. Each layout property is explained when it first shows up.
+
+The examples are plain HTML and CSS, so any current browser works. Some snippets are marked **scratch**: try them, look at the result, then delete them. Others are marked **add to `layout.css`**: those stay, and the last section shows the complete file.
 
 ## Contents
 
-1. [Layout exists before you write CSS](#layout-exists-before-you-write-css)
-2. [The box model explains occupied space](#the-box-model-explains-occupied-space)
-3. [Size comes from content, space, and constraints](#size-comes-from-content-space-and-constraints)
-4. [Flexbox distributes space along an axis](#flexbox-distributes-space-along-an-axis)
-5. [Grid organizes shared rows and columns](#grid-organizes-shared-rows-and-columns)
-6. [Overflow is a consequence, not automatically a bug](#overflow-is-a-consequence-not-automatically-a-bug)
-7. [Positioning changes the rules](#positioning-changes-the-rules)
-8. [Debug the browser's actual layout](#debug-the-browsers-actual-layout)
-9. [Put the layout together](#put-the-layout-together)
+1. [The layout the browser gives you for free](#the-layout-the-browser-gives-you-for-free)
+2. [The box model: content, padding, border, margin](#the-box-model-content-padding-border-margin)
+3. [Where a width comes from](#where-a-width-comes-from)
+4. [Flexbox: one row of items sharing space](#flexbox-one-row-of-items-sharing-space)
+5. [Grid: columns for the whole page](#grid-columns-for-the-whole-page)
+6. [Choosing what happens to content that doesn't fit](#choosing-what-happens-to-content-that-doesnt-fit)
+7. [Positioning: taking a box out of the flow](#positioning-taking-a-box-out-of-the-flow)
+8. [Debugging the layout the browser built](#debugging-the-layout-the-browser-built)
+9. [The complete page](#the-complete-page)
 
-## Layout exists before you write CSS
+## The layout the browser gives you for free
 
-Save this as `index.html` beside an initially empty `layout.css` file, then open the HTML in a browser:
+Save this as `index.html`, create an empty `layout.css` file next to it, and open the HTML file in a browser:
 
 ```html
 <!doctype html>
@@ -63,7 +66,10 @@ Save this as `index.html` beside an initially empty `layout.css` file, then open
           <a href="#tasks-heading">All tasks</a>
         </aside>
         <section class="task-panel" aria-labelledby="tasks-heading">
-          <h2 id="tasks-heading">Tasks</h2>
+          <div class="panel-heading">
+            <h2 id="tasks-heading">Tasks</h2>
+            <span class="task-badge">2 open</span>
+          </div>
           <form class="task-form" method="get">
             <label for="task-title">Task title</label>
             <div class="task-entry">
@@ -94,44 +100,41 @@ Save this as `index.html` beside an initially empty `layout.css` file, then open
 </html>
 ```
 
-The page already has a layout. The browser supplies default styles: headings have margins, list items have markers, and controls have their usual appearance.
+Notice that the page already has a layout, even though `layout.css` is empty. The browser ships with default styles: headings get margins, list items get bullet markers, and inputs and buttons get their usual look.
 
-Its default arrangement is called **normal flow**:
+The default way the browser arranges boxes is called **normal flow**, and it has two kinds of boxes:
 
-- **Block boxes**, such as these headings and sections, follow one another vertically. In our example, a typical block with automatic width fills the width available inside its parent.
-- **Inline content**, such as words and spans within a line, follows the text direction and wraps into more lines when necessary.
+- **Block boxes**, like the headings, the `section`, and the `div`s, stack on top of each other, one per line. When nothing sets their width, its value is `auto`, which means "let the layout rules decide". For a block in normal flow, that decision is to stretch across the full width of its parent.
+- **Inline boxes**, like words and `span`s, sit next to each other in a line of text and wrap onto the next line when they run out of room.
 
-The controls appear beside each other when they fit because inputs and buttons normally participate as inline-level boxes. They still have their own dimensions; “inline” does not mean “just text.”
+That's why the input and the Add task button sit side by side: inputs and buttons are inline-level boxes, so they line up like words. They still have their own width and height; "inline" doesn't mean they're plain text.
 
-An element in normal flow contributes to the arrangement around it. Make a paragraph longer, and the following content moves down. We do not need to calculate a new `top` position for every element below it.
+In normal flow, every box takes up room and pushes the next one along. Make the first task's title longer and everything below it moves down. You never have to calculate a new position for the elements underneath.
 
-### Block and inline describe directions too
+### Block and inline are directions too
 
-In ordinary horizontal English text:
+In English text, the two kinds of boxes also name two directions:
 
 ```text
-Inline direction: words proceed left → right within a line
-Block direction:  additional lines and blocks proceed downward
+Inline direction: words run left to right along a line
+Block direction:  lines and blocks stack top to bottom
 ```
 
-These names follow the document's writing mode. They are not permanent synonyms for horizontal and vertical: vertical writing changes the directions. Our examples use horizontal, left-to-right text.
+These directions follow the language's writing mode, so in vertical writing systems they turn. All the examples here use horizontal, left-to-right text, and that's why later sections can say "row" and "column" without qualifying them.
 
-### `display` has two responsibilities
+### `display` answers two questions at once
 
-`display` affects:
+The `display` property controls how a box sits among its neighbors, and how it lays out its own children:
 
-1. How the element's box participates in its surroundings.
-2. How that box arranges its children.
+- `display: block`: the box takes a full line, and its children follow normal flow.
+- `display: flex`: the box acts like a block on the outside, and its children become flex items.
+- `display: inline-flex`: the box sits in a line like a word, and its children are still flex items.
 
-For example, `display: flex` normally creates a block-level box in its surroundings and a flex layout for its children. `display: inline-flex` uses the same child-layout rules but participates as an inline-level box outside.
+So changing a parent's `display` changes the rules for its direct children only. Their children keep following whatever rules their own parents set.
 
-Changing a parent's `display` changes the rules for its children. It does not automatically apply the same layout mode to all the elements nested inside them.
+## The box model: content, padding, border, margin
 
-**Start with the arrangement you need, not with `position: absolute`.** Normal flow, flexbox, and grid can arrange the main page while allowing it to respond to changing content.
-
-## The box model explains occupied space
-
-A layout box has several distinct parts:
+Every box has four layers, from the inside out:
 
 ```text
 margin: space outside the border
@@ -140,13 +143,11 @@ margin: space outside the border
       └─ content: text, controls, or child boxes
 ```
 
-Padding belongs inside the box. Margin is outside it. A background normally covers content and padding, not the margin.
-
-The **border box** includes content, padding, and border. A width declaration does not always refer to that whole box.
+Padding is inside the box, so the background color shows behind it. Margin is outside the box, so it's always transparent. The **border box** is the content plus padding plus border, which is the visible box you'd draw a frame around.
 
 ### Calculate the same width two ways
 
-For this measurement, make the panel an **inline-block**: it participates at inline level but keeps its own box dimensions. Try this temporary rule:
+To measure a box, first stop it from stretching across the page. `display: inline-block` makes the panel sit in a line like a word while keeping a width you set. Try this **scratch** rule:
 
 ```css
 .task-panel {
@@ -159,7 +160,7 @@ For this measurement, make the panel an **inline-block**: it participates at inl
 }
 ```
 
-Here, `width: 200px` sizes the **content**. The border-box width is:
+With `box-sizing: content-box`, which is the browser's default, `width: 200px` sets the width of the **content** only. Padding and border get added on top:
 
 ```text
 200px content + 16px left padding + 16px right padding
@@ -167,9 +168,9 @@ Here, `width: 200px` sizes the **content**. The border-box width is:
 = 236px border box
 ```
 
-Adding the two horizontal margins gives 260px across the margin box in this simple example. Margins are not included in the declared width.
+The two 12px margins add another 24px of space around it, so the panel takes up 260px across.
 
-Now change only `box-sizing`:
+Now change only `box-sizing` in the scratch rule:
 
 ```css
 .task-panel {
@@ -182,26 +183,26 @@ Now change only `box-sizing`:
 }
 ```
 
-The **whole border box** is now 200px wide. The content gets what remains:
+With `border-box`, `width: 200px` sets the width of the whole **border box**, and the content gets what's left:
 
 ```text
 200px border box - 32px horizontal padding - 4px horizontal border
 = 164px content
 ```
 
-With its margins, that box occupies 224px horizontally. `border-box` includes padding and borders in the declared size; it does not include margins.
+Margins still sit outside, so the panel takes up 224px across. (This arithmetic ignores scrollbars and minimum and maximum widths, which come up later.)
 
-These calculations assume no other minimum or maximum overrides the size and no scrollbar consumes space. Padding and borders also cannot produce a negative content size: if they exceed the declared size, the box still needs room for them.
+Delete the scratch rule before moving on.
 
 ### Why `width: 100%` can overflow
 
-Suppose an ordinary block parent has a 300px-wide content box. A child using `content-box` has `width: 100%`, 16px padding, and a 2px border on each side.
+Say a parent's content area is 300px wide, and its child has `width: 100%`, 16px of padding on each side, and a 2px border on each side.
 
-The content becomes 300px wide, then padding and borders add another 36px. The child's border box is **336px**, not 300px.
+With `content-box`, the child's content becomes 300px wide, and then padding and border add 36px more. The child is 336px wide and pokes 36px out of its parent.
 
-With `border-box`, the 100% width includes that padding and border, so the child's border box is 300px. Alternatively, an ordinary block's automatic width can often fill the available space without needing `width: 100%` at all.
+With `border-box`, the 100% includes the padding and border, so the child is exactly 300px wide. And in many cases you don't need `width: 100%` at all: a block with `auto` width already fills its parent.
 
-Many projects choose a consistent box model:
+Most projects switch every element to `border-box` so widths mean what they look like they mean. **Add to `layout.css`:**
 
 ```css
 *,
@@ -211,89 +212,46 @@ Many projects choose a consistent box model:
 }
 ```
 
-The `*` selector matches all elements. The other two selectors cover generated `::before` and `::after` boxes. This is a useful sizing convention, not a cure for every overflow problem.
+The `*` selector matches every element. `::before` and `::after` are extra boxes CSS can generate inside an element, and they need the rule too.
 
-### Vertical margins can collapse
+One more box-model surprise: when two blocks in normal flow sit on top of each other, their vertical margins **collapse** into one gap the size of the larger margin, instead of adding up. A 24px bottom margin above a 16px top margin gives a 24px gap. Flex and grid items don't do this, and they usually space their items with the `gap` property instead.
 
-In ordinary block flow, adjoining vertical margins can combine rather than add. That is **margin collapsing**.
+## Where a width comes from
 
-If one paragraph has `margin-bottom: 24px` and the next has `margin-top: 16px`, those positive margins can form a **24px gap**, not 40px.
+When nothing sets an element's width, its width is `auto`, and `auto` means "ask the layout rules of the parent". So the answer depends on what's laying the element out:
 
-Horizontal margins do not collapse this way. Flex and grid items' margins do not collapse either. Parent/child margins have additional collapsing cases; we are not covering every case here.
+- A block in normal flow stretches to fill its parent.
+- A flex item starts from the size of its content, then grows or shrinks to share the row.
+- A grid item fills the column it's placed in.
 
-When a flex or grid container should own the spacing between its items, `gap` expresses that directly. Set the items' margins deliberately too: `gap` does not remove existing margins.
+That's the first question from the introduction in practice: before you can tell where a width comes from, you need to know whether the parent is normal flow, flexbox, or grid.
 
-## Size comes from content, space, and constraints
+### Content has a minimum width too
 
-An element's size is not simply the number written next to `width`.
+Content pushes back. Text wraps at spaces, so a title like "Read the DOM article" can squeeze down to the width of its longest word, "article". That narrowest possible width is called the **min-content width**: the width of the longest piece that can't be broken.
 
-The browser considers its layout mode, available space, content, and minimum/maximum constraints. `width: auto` asks the layout algorithm to determine a size; it does not always mean “as wide as the content.”
-
-For example, an ordinary block with automatic width generally fills its available width. A block's automatic height usually grows with its content. A flex item follows flex sizing rules instead.
-
-### A containing block is a reference rectangle
-
-A **containing block** is the rectangular area the browser uses as a reference for certain sizes and positions.
-
-For the ordinary block boxes in our task page, it is usually the parent's content box. A child's percentage width is measured against the width of that reference box.
-
-The reference is determined by layout rules, not merely by nesting. Absolutely positioned elements use different containing-block rules, which we will follow in the positioning section.
-
-### Minimum and maximum sizes constrain the result
-
-For a simple block panel:
-
-```css
-.task-panel {
-  width: 100%;
-  max-width: 40rem;
-  min-width: 0;
-}
-```
-
-`width: 100%` asks for the reference width. `max-width` caps it at 40rem. `min-width` supplies a lower bound; here we do not impose a positive minimum.
-
-There are corresponding `min-height` and `max-height` properties. A minimum can override a requested width, and if a minimum exceeds a maximum, the minimum wins. We will also see that flex and grid can supply an automatic minimum when we have not explicitly set one.
-
-Replace this experiment when moving to the next layout example; the final stylesheet near the end combines the intended rules without the temporary width caps.
-
-### Units tell you what a size is measured against
-
-- **`px`:** CSS pixels. They are not necessarily physical screen pixels; device scaling and browser zoom affect the mapping.
-- **`%`:** a percentage of the reference defined for that property. For our ordinary block's width, that reference is its containing block's width. Do not assume every percentage property uses the same dimension.
-- **`rem`:** multiples of the font size on the root element, `html`. With a 16px root font size, `2rem` is 32px; with a 20px root font size, it is 40px.
-- **`vw`:** hundredths of the viewport width. The **viewport** is the browser's area for displaying the page, not the full document height.
-- **Viewport height units:** `vh` uses the large viewport height. On mobile, browser controls can make the currently visible area smaller. `svh` uses the small viewport height; `dvh` follows the changing viewport height as those controls change.
-
-Use the reference that matches the requirement. A content-based height often serves a task panel better than a fixed viewport height: more tasks should have somewhere to go.
-
-### Percentage height needs a resolvable reference
-
-Suppose a block parent's height is `auto`: it grows according to its children. A normal-flow child's `height: 50%` often cannot resolve against that content-dependent height and behaves like `auto` instead.
-
-If the parent has a definite `height: 200px`, the child's 50% can resolve to 100px. Merely giving the parent `min-height: 200px` is not equivalent to giving it that definite height.
-
-Flex and grid have additional rules for resolving percentage sizes. The useful first question is **“50% of which height, and is that height available to this layout calculation?”**, not “Why is CSS ignoring my number?”
-
-### Content has size requirements too
-
-Replace a task title with a long identifier that contains no spaces:
+Now change the first task's title in `index.html` to an identifier with no spaces:
 
 ```text
 task_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz
 ```
 
-Text normally wraps at allowed break points, such as spaces between words. This identifier has no ordinary word breaks, so it can require much more width than a short title.
+There's nowhere to break it, so its min-content width is the whole 80-odd characters. Keep it in the HTML for now: it's the test case that triggers the first two bugs, and flexbox and grid both look at min-content width when they decide how small an item may get.
 
-A box's **intrinsic size** is a size derived from its content rather than simply imposed by an outside width. One important measure is the width needed when the browser uses the available line-break opportunities as much as possible. That is its **min-content width**. An unbreakable string can keep that minimum large.
+### A quick note on units
 
-This matters even when you have not declared a width. Flex and grid use content measurements when deciding how small their items or tracks can become.
+Lengths in CSS are always measured against something:
 
-## Flexbox distributes space along an axis
+- `px` is a CSS pixel. Browser zoom and high-resolution screens change how many physical dots it covers, so treat it as a fixed size you design with, not a device pixel.
+- `rem` is a multiple of the root font size, the font size on the `html` element. With the usual 16px default, `2rem` is 32px. Sizes in `rem` grow when someone increases their browser's font size.
+- `%` is a percentage of a reference size, and the reference depends on the property. A percentage `width` is measured against the parent's content width in normal flow; the positioning section shows a case where the reference is somewhere else.
+- `vw` and `vh` are hundredths of the **viewport**, the visible area of the browser window. On phones, the browser's toolbars can slide in and out and change that height; `svh` and `dvh` are variants for that situation.
 
-For the input and Add task button, we want a row where the input can take remaining space.
+## Flexbox: one row of items sharing space
 
-Remove the earlier panel-sizing experiments and add this to `layout.css`:
+Start with the text input and the Add task button. The goal is a row where the button keeps its natural size and the input takes all the remaining space.
+
+**Add to `layout.css`:**
 
 ```css
 .task-form label {
@@ -317,26 +275,29 @@ Remove the earlier panel-sizing experiments and add this to `layout.css`:
 }
 ```
 
-`.task-entry` is the **flex container**. Its direct children—the input and button—are the **flex items**. The label is outside that container, so it is not part of this flex row.
+Here's what to notice:
 
-### Main and cross axes describe the two directions
+- `.task-entry` is the **flex container**, because it has `display: flex`. Its direct children, the input and the button, are **flex items**. The label sits outside `.task-entry`, so it isn't part of the row; `display: block` just puts it on its own line above.
+- `gap: 0.75rem` puts space between the items, and only between them.
+- `flex: 1` on the input means "grow to fill the free space". `flex: none` on the button means "stay at your natural size".
+- `min-width: 0` on the input is there for the same reason the first bug happens. The next few sections explain it.
 
-The **main axis** is the direction along which flex items are arranged. The **cross axis** runs across it.
+### Main axis and cross axis
 
-For the default `flex-direction: row` in our horizontal writing mode:
+A flex container lines its items up along one direction, called the **main axis**. The direction across it is the **cross axis**:
 
 ```text
-main axis:  input → button
-cross axis: perpendicular to that row, up/down
+main axis:  input → button  (left to right)
+cross axis: top to bottom, across the row
 ```
 
-`justify-content` distributes available space along the main axis. `align-items` aligns the items along the cross axis; `center` aligns the input and button across the row.
+`justify-content` spreads leftover space along the main axis. `align-items` lines the items up along the cross axis, and `center` here keeps the input and button vertically centered against each other.
 
-Change `flex-direction` to `column`, and the main axis becomes vertical in this writing mode. Flexbox does not inherently mean “horizontal.”
+Set `flex-direction: column` and the main axis turns vertical. So flexbox means "a line of items sharing space", in whichever direction you pick.
 
-### Basis, growing, and shrinking are separate choices
+### What `flex: 1` is short for
 
-The `flex` shorthand combines three controls:
+The `flex` property is shorthand for three separate settings:
 
 ```css
 .task-entry input {
@@ -344,23 +305,19 @@ The `flex` shorthand combines three controls:
 }
 ```
 
-Read those numbers as:
+In order, those are:
 
-1. **`flex-grow: 1`:** let the item receive a share of extra space.
-2. **`flex-shrink: 1`:** let it give up space when the items do not fit.
-3. **`flex-basis: 12rem`:** use 12rem as the starting size along the main axis before distributing space.
+1. **`flex-grow: 1`**: when there's extra space in the row, this item takes a share of it.
+2. **`flex-shrink: 1`**: when the items don't fit, this item gives up some of its size.
+3. **`flex-basis: 12rem`**: the item starts at 12rem along the main axis, before any growing or shrinking.
 
-With an `auto` basis, an explicit main-axis size such as `width` can supply that starting size; otherwise content sizing contributes.
+So `flex: 1` is short for `flex: 1 1 0%`: grow, shrink, and start from a basis of `0%`. In this row, where the parent's width is known, that works out to zero, so the input's starting size is nothing and all of the row's free space goes to growing. And `flex: none` is short for `flex: 0 0 auto`: don't grow, don't shrink, and start from the item's own size.
 
-Growth shares **extra space**, not necessarily the entire final width. If two items start at different sizes, grow factors of 1 and 2 do not automatically produce final widths in a 1:2 ratio. Shrinking also accounts for starting sizes, not only the shrink factors.
+Grow factors divide only the *extra* space, the space left after every item's basis. Two items with `flex-grow: 1` and `flex-grow: 2` that each start at 100px in a 500px row share the leftover 300px as 100px and 200px, so they end up 200px and 300px wide, not 1:2. Start both from a zero basis, as `flex: 1` and `flex: 2` do, and all the space is extra, so the final widths follow the 1:2 factors, as long as padding, borders, and minimum or maximum sizes don't get in the way.
 
-`flex: 1` is a convenient grow-and-shrink setup using a zero basis in this row, where the parent provides a known available width. `flex: none` makes the button keep its automatically determined size rather than grow or shrink through flex distribution.
+### The title that refuses to shrink
 
-Minimum and maximum sizes still constrain both. Flex distribution does not erase them.
-
-### Why a flexible title can refuse to shrink
-
-Use the same arrangement for a task row:
+Now give the task rows the same treatment. **Add to `layout.css`:**
 
 ```css
 .task-row {
@@ -380,11 +337,11 @@ Use the same arrangement for a task row:
 }
 ```
 
-Now use the long identifier as the title and narrow the page. It may push the actions outside the row even though `flex: 1` permits shrinking.
+With the long identifier still in the first row, make the browser window narrow. The Done and Remove buttons slide out of the row. This is the first bug from the introduction, and `flex: 1` says the title is allowed to shrink, so why doesn't it?
 
-By default, a flex item's `min-width` is `auto`. In this ordinary horizontal row with visible overflow, that can become a **content-based minimum**: the title is not allowed to shrink below the width its content requires.
+Every flex item has a hidden lower limit. Its `min-width` defaults to `auto`, and for a flex item, `auto` means "no narrower than your min-content width". The identifier's min-content width is the whole string, so the title stops shrinking there and pushes the buttons out.
 
-Setting a shrink factor did not remove that minimum. To permit a smaller title box, add:
+The fix is to lift that limit on the item that has to shrink. **Add to `layout.css`:**
 
 ```css
 .task-title {
@@ -392,21 +349,58 @@ Setting a shrink factor did not remove that minimum. To permit a smaller title b
 }
 ```
 
-This allows the **box** to shrink. It does not, by itself, make the long text wrap. We still need to choose how to handle that text in the overflow section.
+The buttons come back into the row. The text inside the title still doesn't wrap, though; it now spills out of a box that's narrower than it. `min-width: 0` lets the **box** shrink, and deciding what happens to the **text** is a separate step, covered in the overflow section.
 
-The minimum-size rules have other cases, including scrolling items. The lesson is not “add `min-width: 0` everywhere”; it is “inspect the minimum on the flex item that must be allowed to shrink.”
+The same limit explains the input: text inputs have a built-in default width, and `min-width: 0` lets the input shrink below it on narrow screens.
 
-### Wrapping can be better than squeezing
+### Let items wrap instead of squeezing
 
-Flex rows are single-line by default. With `flex-wrap: wrap`, items can move onto additional lines when their starting sizes do not fit.
+A flex row stays on one line unless you allow it to wrap. With `flex-wrap: wrap`, an item that doesn't fit at its starting size moves to the next line instead.
 
-For example, an input with a 12rem basis can share a line with Add task when there is room, and move the button onto a second line when there is not.
+Combine that with a 12rem starting size, and the input and Add task button share a line when there's room and stack when there isn't. The same works for the task rows: on a narrow screen, the actions drop below the title.
 
-A wrapped flex container still arranges items along its main axis, one line at a time. It does not make items on different lines share the same column tracks. That is one reason to use grid for other arrangements.
+**Update `layout.css`:** replace the flex rules from this section with this combined version, which keeps everything above and adds wrapping:
 
-## Grid organizes shared rows and columns
+```css
+.task-form label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
 
-For a sidebar beside the task panel, give their shared parent a grid:
+.task-entry,
+.task-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.task-entry input,
+.task-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.task-entry button {
+  flex: none;
+}
+
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex: none;
+  max-width: 100%;
+  gap: 0.5rem;
+}
+```
+
+The action group can now wrap its own two buttons too, and `max-width: 100%` keeps it from being wider than its row. That only matters at very narrow widths or with large text, but those are exactly the cases that break layouts.
+
+## Grid: columns for the whole page
+
+Now step out from a single row to the whole page. The sidebar and the task panel should sit side by side as two columns, and that's what grid is for.
+
+**Add to `layout.css`:**
 
 ```css
 .workspace {
@@ -416,29 +410,25 @@ For a sidebar beside the task panel, give their shared parent a grid:
 }
 ```
 
-`.workspace` is the **grid container**. The sidebar and task panel are its direct children, so they are **grid items**. In this two-child example, automatic placement puts them beside each other in document order.
+`.workspace` is the **grid container**, and its two direct children, the sidebar and the task panel, are **grid items**. `grid-template-columns` defines two columns, which grid calls **tracks**: a fixed 12rem track and a `1fr` track. The browser places the items into the tracks in the order they appear in the HTML.
 
-A **track** is a row or column of the grid. **Grid lines** mark the track boundaries. Two columns have three column lines: the sidebar occupies the first track, and the task panel occupies the second. Grid can coordinate widths across multiple rows as well as heights across columns.
+### `fr` takes a share of the remaining space
 
-### `fr` shares remaining space
-
-An `fr` unit is a share of the space available for flexible tracks, after accounting for non-flexible tracks and gaps.
-
-For example, if this grid's content width is 768px, the root font is 16px, the sidebar is 12rem (192px), and the gap is 1rem (16px):
+An `fr` is one share of the space left over after the fixed tracks and gaps are taken out. Say `.workspace` is 768px wide and the root font size is 16px, so the sidebar track is 12rem (192px) and the gap is 1rem (16px):
 
 ```text
-768px - 192px sidebar - 16px gap = 560px for the flexible track
+768px - 192px sidebar - 16px gap = 560px for the 1fr track
 ```
 
-That is the expected second-column width **if its minimum size allows it**. In a grid with `1fr 2fr`, the flexible tracks normally share that available space in a 1:2 ratio, again subject to their sizing constraints.
+With `1fr 2fr`, two flexible tracks would split that space one part to two.
 
 ### Why `1fr` can still overflow
 
-A plain `1fr` track has an automatic minimum. Content can make that minimum larger than the space we intended to give it.
+Narrow the window with the long identifier still in the task list. The task panel grows past the edge of the page instead of fitting into the leftover space. This is the second bug from the introduction.
 
-Put the unbreakable identifier in the task panel. The main track can grow beyond the available width instead of becoming the neat “remaining space” column we expected.
+It's the same hidden limit as in flexbox. A plain `1fr` track is really `minmax(auto, 1fr)`: "at least as wide as the widest content inside it, at most one share". The identifier is wide, so the track won't go below it.
 
-To allow that track to become smaller, change its minimum explicitly:
+Set the lower limit yourself. **Update `layout.css`:** change the `.workspace` columns to:
 
 ```css
 .workspace {
@@ -448,52 +438,74 @@ To allow that track to become smaller, change its minimum explicitly:
 }
 ```
 
-`minmax(0, 1fr)` means **a minimum of zero, with a flexible maximum that receives one share**. It removes the track's automatic minimum from this calculation.
+`minmax(0, 1fr)` means "at least zero, at most one share". Now the track fits the space, and the text inside the task panel needs the same treatment the title box did: a decision about what happens to text that doesn't fit. `min-width: 0` in flexbox and `minmax(0, 1fr)` in grid are the same idea. Allowing the box to get smaller and deciding what to do with its content are two separate steps.
 
-The track can now fit the available space, but content can still overflow its smaller box. Just as with `min-width: 0` in flexbox, permitting a smaller layout size and deciding what happens to the content are separate steps.
+### One column on narrow screens
 
-Flexbox is a good starting point for a row or column of items distributing space along one main direction. Grid is useful when the arrangement needs shared rows and columns. A grid page containing flex task rows is an ordinary combination, not a compromise.
+On a phone, two columns side by side leave too little room for either. A **media query** applies rules only when a condition is true, such as the viewport being at least a certain width. **Update `layout.css`:** replace the `.workspace` rule with a single column by default, plus two columns on wider screens:
 
-## Overflow is a consequence, not automatically a bug
+```css
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
 
-**Overflow** means something extends beyond a box's bounds. The box can be the intended size while its text extends outside it.
+@media (min-width: 48rem) {
+  .workspace {
+    grid-template-columns: 12rem minmax(0, 1fr);
+  }
+}
+```
 
-After allowing our title box and grid track to shrink, choose a content policy:
+Below 48rem, the sidebar sits above the task panel. From 48rem up, they sit side by side. Two details are easy to miss:
 
-- **Wrap** a task title when readers should be able to read the full value.
-- **Scroll** content that should preserve its structure, such as a wide code sample.
-- **Truncate** a preview when hiding part of the value is deliberate and readers have a way to access it elsewhere.
-- **Clip** content when the hidden part is genuinely not needed. Do not use clipping to silently remove an essential action button.
+- In a media query, `rem` uses the browser's default font size, not a font size your CSS sets on `html`. With default settings, 48rem is 768px.
+- The query checks the width of the viewport, not the width of `.workspace`. If you drop this layout into a narrow box on a wide screen, it still gets two columns.
 
-For our long titles:
+Pick the breakpoint by narrowing the window until the content looks cramped, not from a list of device sizes.
+
+### Flexbox or grid?
+
+Use flexbox when things line up in one direction, like a row of buttons or a form field next to its button. Use grid when things need to line up in two directions, like a sidebar beside content or a grid of cards. Most pages use both: this one is a grid, and every task row inside it is a flex row.
+
+## Choosing what happens to content that doesn't fit
+
+**Overflow** is content that sticks out of its box. The box itself can be exactly the right size while its text runs past the edge, and that's where the task title is now: the box shrinks correctly, but the identifier spills out.
+
+So now you pick a policy for that content:
+
+- **Wrap** it when the reader needs to see the whole value, like a task title.
+- **Scroll** it when its shape matters, like a wide code sample.
+- **Truncate** it with an ellipsis when it's a preview and the full value is available somewhere else.
+- **Clip** it only when the hidden part really isn't needed. An action button is always needed.
+
+Task titles should stay readable, so wrap them. **Add to `layout.css`:**
 
 ```css
 .task-title {
-  min-width: 0;
   overflow-wrap: anywhere;
 }
 ```
 
-`overflow-wrap: anywhere` permits breaks inside an otherwise unbreakable string. Those break opportunities also affect its intrinsic minimum size. That means wrapping can change the sizing calculation as well as what the text looks like.
+`overflow-wrap: anywhere` lets the browser break the identifier between any two characters. That also shrinks its min-content width to a single character, so the title no longer forces anything wider. Wrapping fixes how the text looks and the size calculation at the same time.
 
-### What the overflow values do
+### What the `overflow` values do
 
-- `overflow: visible` allows content to extend outside the box.
-- `overflow: auto` clips overflow and allows scrolling when needed.
-- `overflow: hidden` clips and hides the overflowing part from ordinary view, but the box can still be scrolled by code or browser behavior such as bringing focused content into view.
-- `overflow: clip` clips without making the box a scroll container.
+The `overflow` property decides what a box does with content that sticks out:
 
-A **scroll container** is a box whose overflowing content can be scrolled. Its visible interior is the viewing area for that content.
+- `visible`, the default, lets content draw outside the box.
+- `auto` cuts content off at the box's edge and adds scrollbars when needed.
+- `hidden` cuts content off with no scrollbars, but the box can still scroll, for example when JavaScript scrolls it or when the browser brings a focused element inside it into view.
+- `clip` cuts content off and the box can't scroll at all.
 
-This distinction will matter for sticky positioning. `hidden` and `clip` are not interchangeable names for the same behavior.
+A box with `auto` or `hidden` is a **scroll container**: a box with its own scrollable area. That matters for sticky positioning later.
 
-### Hiding is not the same as fixing
+### Hiding the problem hides the buttons
 
-If the actions have been pushed out of a task row, adding `overflow: hidden` to the row can make the page's horizontal scrollbar disappear while also hiding Remove.
+When the actions slide out of the row, it's tempting to add `overflow: hidden` to `.task-row`. The page's horizontal scrollbar disappears and the row looks tidy. But Remove is now cut off, and nobody can click it. So before hiding anything, check which box grew too wide and why.
 
-The row may look contained, but the required interaction is still broken. Inspect the item sizes and their minimums before choosing what to hide.
-
-Likewise, an ellipsis is a deliberate presentation policy, not a sizing rule by itself:
+An ellipsis is a choice about presentation, and it's an alternative to wrapping, not an addition to it. As a **scratch** experiment, try this instead of the wrapping rule:
 
 ```css
 .task-title {
@@ -504,15 +516,17 @@ Likewise, an ellipsis is a deliberate presentation policy, not a sizing rule by 
 }
 ```
 
-In the flex row, the title has limited available width. `nowrap` keeps the text on one line, `hidden` clips the excess, and `ellipsis` indicates that text was omitted. This is an **alternative** to wrapping, not something to add to the wrapping version. For these task titles, we will keep the full text visible by wrapping.
+`nowrap` keeps the title on one line, `hidden` cuts off whatever doesn't fit, and `ellipsis` draws "…" where it was cut. Task titles need to be readable in full, so delete this and keep the wrapping rule.
 
-## Positioning changes the rules
+## Positioning: taking a box out of the flow
 
-Normal flow, flexbox, and grid arrange boxes while accounting for one another. The `position` property changes how a particular box is placed.
+Normal flow, flexbox, and grid place boxes so they make room for each other. The `position` property lets you move a single box with offsets like `top` and `left`, and some values take the box out of that shared arrangement completely.
 
-The default is `static`: no special offset positioning. Properties such as `top` and `left` do not move a statically positioned box.
+The default is `position: static`, which means "no special positioning". On a static box, `top` and `left` do nothing.
 
-### `relative`: move visually, keep the original space
+### `relative`: shift the box, keep its space
+
+Try this **scratch** rule:
 
 ```css
 .task-row {
@@ -521,118 +535,186 @@ The default is `static`: no special offset positioning. Properties such as `top`
 }
 ```
 
-The row is laid out normally, then drawn 8px lower. Its neighbors do not move to make room for that offset. It can overlap something below it while leaving its original space behind.
+Each row is laid out as usual, then drawn 8px lower. Its original space stays reserved, and the rows below don't move, so the shifted row can overlap them. Delete the rule afterwards.
 
-`position: relative` without offsets does not move the row. It can still establish a reference for absolutely positioned descendants.
+`position: relative` with no offsets doesn't move anything, but it does something useful: it makes the box the reference point for absolutely positioned elements inside it. The badge needs exactly that.
 
-### `absolute`: leave flow and use a containing block
+### Containing blocks: what offsets are measured against
 
-Consider a small task-count badge inside this panel fragment:
+When a box says `top: 0` or `width: 50%`, the browser measures against a rectangle called the **containing block**. For a block in normal flow, that's its parent's content area, which is why `width: 100%` matched the parent earlier.
 
-```html
-<section class="task-panel">
-  <h2>Tasks</h2>
-  <div>
-    <span class="task-badge">2</span>
-  </div>
-</section>
+Absolutely positioned boxes use a different rule, and that's what causes the third bug.
+
+### `absolute`: the badge in the wrong corner
+
+The HTML already has a count badge next to the Tasks heading. **Add to `layout.css`:**
+
+```css
+.task-badge {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
 ```
+
+`position: absolute` takes the badge out of normal flow, so it no longer takes up space next to the heading. Its `top` and `right` are measured from its containing block. Reload, and the badge jumps to the top-right corner of the whole page. That's the third bug from the introduction.
+
+Here's how the browser picks the containing block for an absolute box:
+
+1. It looks at the badge's parent, `.panel-heading`. That `div` is `position: static`, so it doesn't count.
+2. It keeps walking up through `.task-panel`, `.workspace`, `main`, and `body`. They're all static too.
+3. It runs out of ancestors, so it uses the **initial containing block**, a rectangle the size of the viewport at the top of the page.
+
+An ancestor counts if its `position` is anything other than `static`. (A few other properties, such as `transform`, also make an element count.) So mark the panel as the reference. **Add to `layout.css`:**
 
 ```css
 .task-panel {
   position: relative;
 }
 
-.task-badge {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
+.panel-heading {
+  padding-right: 6rem;
 }
 ```
 
-The badge is removed from normal flow, so it does not reserve space beside the heading. Its `top` and `right` offsets are measured from its containing block.
+Now the walk stops at `.task-panel`, and the badge sits 1rem from the panel's top-right corner, measured from the inside of its border. It's positioned against the panel even though its direct parent is `.panel-heading`.
 
-Here is how the browser finds that reference:
+The padding on `.panel-heading` is the price of taking something out of the flow: nothing makes room for the badge automatically anymore, so you reserve the space yourself. Otherwise a long heading would run underneath it on a narrow screen.
 
-1. The badge's immediate parent is the inner `div`, which has its default `position: static`.
-2. The browser continues upward to `.task-panel`.
-3. That panel has `position: relative`, so it establishes the badge's containing block. For this ordinary block ancestor, the reference is its padding box: inside its border and including its padding.
+### `fixed`: pinned to the window
 
-The badge is positioned against the panel, **not its immediate parent**. Other properties can also establish containing blocks; a transform is one example. If no ancestor establishes one, absolute positioning uses the initial containing block, based on the viewport, rather than arbitrarily choosing the nearest parent.
+`position: fixed` also takes a box out of the flow, but its containing block is usually the viewport itself. So a fixed box stays at the same spot on screen while the page scrolls under it, which suits something like a floating help button. (There's one exception: if an ancestor has a `transform`, the fixed box is pinned to that ancestor instead of the viewport.) Like any box outside the flow, a fixed box can cover content, so keep it for a small control that really needs to stay on screen. This page doesn't need one.
 
-Reserve enough room so the badge does not cover the heading, and test the narrow case. Removing something from flow makes avoiding overlap your responsibility.
+### `sticky`: keep the sidebar in view
 
-Use this as a separate positioning experiment. The complete page stylesheet below keeps its ordinary content in flow and does not require this badge.
+On a wide screen, a short sidebar beside a long task list scrolls out of view. `position: sticky` keeps it in place: the box stays in normal flow until scrolling would carry it past a threshold, and then it sticks there.
 
-### `fixed`: usually stay at a viewport edge
+**Update `layout.css`:** add the sticky rule inside the existing media query, so it only applies to the two-column layout:
 
 ```css
-.help-button {
-  position: fixed;
-  right: 1rem;
-  bottom: 1rem;
+@media (min-width: 48rem) {
+  .workspace {
+    grid-template-columns: 12rem minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
 }
 ```
 
-A fixed element is also removed from flow. In the common case, its reference is the viewport, so it stays at that corner while the document scrolls.
+Here's what each line does:
 
-But an ancestor can establish a different fixed-position containing block. For example, a transformed ancestor can make the fixed descendant use that ancestor instead of the viewport. “Fixed always means viewport-relative” is too absolute.
+- `top: 1rem` is the threshold: once the sidebar's top edge would scroll to within 1rem of the top of the scrolling area, it stops there. Without an offset like `top`, sticky does nothing.
+- `align-self: start` stops the grid from stretching the sidebar to the full height of the row. A sidebar as tall as the task panel would have no room to move.
+- The sidebar never leaves its own grid area, so once the bottom of the task panel scrolls past, the sidebar scrolls away with it.
 
-A fixed control can cover content because the surrounding layout does not reserve space for it. Use it for a genuine persistent control, not to arrange the whole page.
+"The scrolling area" is the nearest ancestor that's a scroll container. Usually that's the page itself, but if any ancestor has `overflow: auto` or `overflow: hidden`, the sidebar sticks inside that ancestor instead, which often looks like sticky isn't working at all.
 
-### `sticky`: stay in flow, then constrain movement during scrolling
+## Debugging the layout the browser built
+
+When the layout is wrong, look at what the browser built before you add another rule. Open DevTools and go through these steps:
+
+1. **Select the element that's misplaced or too wide.** The Elements panel shows the live page, including anything JavaScript or a framework changed.
+2. **Check what's laying it out.** Look at its parent's `display`. Is the element in normal flow, a flex item, or a grid item?
+3. **Check its size and limits.** The box-model diagram in the Computed panel shows content, padding, border, and margin separately. Look for `min-width` and `max-width`. The flex and grid overlays draw the axes and tracks on the page.
+4. **Find what it's measured against.** For an absolute box, which ancestor has a `position` other than `static`? For a sticky box, which ancestor scrolls?
+5. **Separate the box from its content.** Is the box too wide, or is the box the right size with text spilling out of it?
+6. **Change the rule that's causing it.** Lift a minimum, let text wrap, let items wrap, or choose scrolling on purpose. Then test the whole interaction again, not just whether the scrollbar went away.
+
+The Computed panel shows the final values after the browser combined every rule that applies. A `width` in the Styles panel is only one input to that result.
+
+### Angular components are boxes too
+
+In an Angular app, every component has a **host element**: the element that matches the component's selector, like `<task-details>`. It's a real element in the page, and it takes part in layout like any other.
+
+Two things follow from that. First, a custom tag like `<task-details>` isn't an element the browser knows, so it gets no default styles, and its `display` falls back to the CSS default, `inline`. So a component you expect to behave like a block, with a width, padding, or margins that push its neighbors away, behaves like a word in a sentence instead. (A component whose selector matches a native element, such as `section[task-details]`, keeps that element's usual display, so this only applies to custom tags.) Give the custom tag a display in the component's styles:
 
 ```css
-.sidebar {
-  position: sticky;
-  top: 1rem;
-  align-self: start;
+:host {
+  display: block;
 }
 ```
 
-The sidebar initially occupies its normal place. During scrolling, the browser can shift it to keep its top edge 1rem from the top of its relevant scrolling area, while keeping it within its containing block.
+`:host` selects the component's own host element from inside its styles. (The Angular CLI can add this rule for you: `ng generate component` has a `--display-block` option.)
 
-The reference for the sticking threshold is the nearest relevant scroll container's visible area—not automatically the browser window. An ancestor with `overflow: auto` or even `overflow: hidden` can change that reference.
+Second, if a flex row contains `<task-details>` and a button, the flex item is the `<task-details>` host element, not the `span` inside its template. So when the details refuse to shrink, put `min-width: 0` on the host, with `:host { min-width: 0; }`. Changing the inner `span` won't help, because the span isn't the item that's holding the row open.
 
-`top: 1rem` supplies a sticking threshold. Without an applicable offset, sticky positioning does not produce that sticking behavior. There also needs to be room to move: a sidebar as tall as its containing block has little or no distance over which to stick.
+### Test with awkward content
 
-`align-self: start` keeps this grid item from stretching to fill the row's height. A short sidebar beside a long task panel then has room to remain visible while the panel scrolls past. The sidebar still stops at the bottom boundary of its containing block; it is not fixed forever.
+One screenshot at one width proves very little. Try:
 
-## Debug the browser's actual layout
+- the long identifier, a title that's a whole sentence, and twenty tasks;
+- a narrow window, and a narrow parent on a wide window;
+- browser zoom at 200%, and a larger default font size;
+- longer button labels, like a translation would produce.
 
-When a layout is wrong, inspect the result before adding another rule.
+Keep the HTML in a sensible reading order too. Flex `order` and grid placement can move things around visually, but keyboard focus and screen readers still follow the HTML order.
 
-1. **Select the overflowing or misplaced element in DevTools.** The Elements panel shows the current DOM, not just the source file.
-2. **Identify its parent layout.** Is the element a normal-flow block, a flex item, or a grid item? Look at the parent's `display`.
-3. **Inspect dimensions and constraints.** Check width, padding, borders, and minimum/maximum sizes. The box-model diagram separates them; browser flex/grid overlays show axes and tracks.
-4. **Find the sizing or positioning reference.** What is the containing block? For sticky positioning, which ancestor owns scrolling?
-5. **Separate the box from its content.** Did the box itself grow too wide, or is long text overflowing a correctly sized box?
-6. **Change the rule responsible.** Permit shrinking, create break opportunities, wrap controls, or choose scrolling deliberately. Recheck the whole interaction, not just the scrollbar.
+## The complete page
 
-The **Computed** panel shows the values the browser resolved after combining applicable styles; layout measurements show the resulting box dimensions. A declared width in the Styles panel is only one input to that result.
-
-### Angular components still produce layout boxes
-
-Suppose a flex task row contains `<task-details>` and an action button. The component's **host element**, `<task-details>`, is the flex item—not the span inside its template.
-
-If that host's automatic minimum prevents shrinking, changing only the inner span's `min-width` may not solve it. Inspect the host and its parents too. A component boundary does not remove an element from the browser's layout calculations.
-
-### Test content and available space, not just one screenshot
-
-Try:
-
-- The long identifier, a multi-sentence title, and more tasks.
-- A narrower viewport **and** a narrower parent container.
-- Browser zoom and larger text settings.
-- Labels and button text that need more room.
-
-Keep the DOM in a meaningful reading and interaction order. Flex `order` and explicit grid placement can change visual order without changing the order used for keyboard navigation and reading. Do not rearrange the interface visually and assume every other way of using it changed too.
-
-## Put the layout together
-
-Return to the original HTML, without the optional badge experiment. This complete `layout.css` combines the layout choices we made:
+Put the first task's original title back, or leave the identifier in as a test. A few rules are still missing: the ones that frame the page. **Add to `layout.css`:**
 
 ```css
+body {
+  margin: 0;
+  font: 1rem/1.5 system-ui;
+}
+
+input,
+button {
+  font: inherit;
+}
+```
+
+`body` drops the browser's default 8px margin and sets one font for the page. Browsers give inputs and buttons their own font, so `font: inherit` makes them use the page's font too.
+
+**Add to `layout.css`:**
+
+```css
+.page {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding: 1rem;
+}
+```
+
+`.page` caps the content at 64rem wide, and `margin-inline: auto` splits the leftover space between the left and right margins, which centers it.
+
+**Add to `layout.css`:**
+
+```css
+.sidebar,
+.task-panel {
+  padding: 1rem;
+  border: 1px solid;
+}
+```
+
+The sidebar and the task panel get padding and a border so you can see their edges.
+
+**Add to `layout.css`:**
+
+```css
+.task-list {
+  display: grid;
+  gap: 1rem;
+  padding: 0;
+  list-style: none;
+}
+```
+
+The task list drops its bullet markers and the indentation that comes with them, and lays the rows out as a one-column grid with a gap between them. The HTML's `role="list"` keeps screen readers announcing it as a list; Safari stops treating a list as a list once its markers are removed with `list-style: none`.
+
+That's everything. The complete file contains every rule marked "add to `layout.css`" in its final version, grouped with short comments:
+
+<details>
+<summary>The complete <code>layout.css</code></summary>
+
+```css
+/* Box model and page frame */
 *,
 *::before,
 *::after {
@@ -655,6 +737,7 @@ button {
   padding: 1rem;
 }
 
+/* Workspace, panels, and badge */
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -667,6 +750,21 @@ button {
   border: 1px solid;
 }
 
+.task-panel {
+  position: relative;
+}
+
+.panel-heading {
+  padding-right: 6rem;
+}
+
+.task-badge {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
+
+/* Task form and rows */
 .task-form label {
   display: block;
   margin-bottom: 0.5rem;
@@ -709,42 +807,35 @@ button {
   gap: 0.5rem;
 }
 
+/* Two columns on wider screens */
 @media (min-width: 48rem) {
   .workspace {
     grid-template-columns: 12rem minmax(0, 1fr);
   }
+
+  .sidebar {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
 }
 ```
 
-`margin-inline: auto` shares available horizontal margin between the two sides in this writing mode, centering the capped page. `list-style: none` removes the list markers, and resetting list padding removes their usual indentation.
+</details>
 
-The HTML's `role="list"` explicitly identifies the task list to tools such as screen readers. This preserves list announcements in Safari, which can otherwise stop recognizing a list when its markers are removed with `list-style: none`.
+Each of the three bugs from the introduction now has a cause and a fix. The buttons slid out of the row because a flex item won't shrink below its min-content width until you give it `min-width: 0`. The `1fr` column overflowed because `1fr` has the same content-based minimum, which `minmax(0, 1fr)` removes. And the badge landed in the page's corner because no ancestor had a position, so it measured from the viewport until `.task-panel` got `position: relative`. In each case, the fix came from asking what's laying the element out, where its width comes from, and what its offsets are measured against.
 
-The layout starts with a single column. The **media query**, `@media (min-width: 48rem)`, applies the two-column arrangement when the viewport is wide enough for this example. In media queries, font-relative units use the browser's initial font size rather than a font size the page sets on `html`.
+### Check your understanding
 
-The query checks the viewport, not the width of `.workspace`. If you reuse the layout inside a narrow container on a wide page, reconsider the column arrangement for that context. Choose a threshold based on the content's needs, not because a device category supposedly begins there.
+1. A flex item with `flex: 1` won't shrink below the width of a long word. What's setting that lower limit, and what removes it?
+2. After you change a column to `minmax(0, 1fr)`, the column fits but text still spills out of it. Why, and what's the next decision?
+3. A badge with `position: absolute` has a static parent and a grandparent with `position: relative`. Which box are its offsets measured from?
 
-The form and task rows can wrap independently. Their text can shrink and break, and the action group can wrap its own buttons. We have not used absolute positioning to hold the page together or hidden overflow to make missing controls disappear.
+Answers:
 
-### Closing check
-
-Before changing CSS, can you explain these cases?
-
-1. A 100%-wide child with padding is wider than its parent. Which box did that width size?
-2. A `flex: 1` title refuses to shrink. What might its minimum width be based on?
-3. A `1fr` column grows beyond the grid. What does `minmax(0, 1fr)` change, and what does it leave unresolved?
-4. A badge's immediate parent is static, but its grandparent is relative. Which one supplies the absolute-position reference?
-5. A sticky sidebar does not follow page scrolling. Which scroll container is it using, and does it have room to move?
-
-Check your reasoning:
-
-- With `content-box`, the 100% width sizes the content; padding and borders are added outside it. `border-box` includes those edges in the width.
-- The flex title's automatic minimum can be based on its content. Allowing shrink through `flex` does not remove that minimum.
-- `minmax(0, 1fr)` lets the track shrink below its automatic minimum. The content still needs an overflow policy, such as wrapping.
-- In that badge example, the relative grandparent supplies the reference, not the static immediate parent.
-- The sticky sidebar may be using an ancestor's scrolling area instead of page scrolling, or may have no space to move within its containing block.
-
-Once you identify those inputs, the next CSS change can be a reasoned choice rather than another guess.
+1. A flex item's `min-width` defaults to `auto`, which means its min-content width. `min-width: 0` removes the limit.
+2. `minmax(0, 1fr)` only lets the track get smaller. The content still needs a policy, such as wrapping with `overflow-wrap: anywhere`.
+3. The grandparent. The browser skips static ancestors and uses the nearest one with a `position` other than `static`.
 
 ## Sources and further reading
 
@@ -754,8 +845,11 @@ Once you identify those inputs, the next CSS change can be a reasoned choice rat
 - [MDN: list styles and accessibility](https://developer.mozilla.org/en-US/docs/Web/CSS/list-style#accessibility)
 - [CSS Values and Units: relative lengths and their references](https://drafts.csswg.org/css-values-4/#relative-lengths)
 - [CSS Sizing: `box-sizing`](https://drafts.csswg.org/css-sizing-3/#box-sizing)
+- [CSS Flexible Box Layout: the `flex` shorthand](https://drafts.csswg.org/css-flexbox-1/#flex-common)
 - [CSS Flexible Box Layout: automatic minimum size of flex items](https://drafts.csswg.org/css-flexbox-1/#min-size-auto)
 - [CSS Grid Layout: track sizing and flexible tracks](https://drafts.csswg.org/css-grid-1/#track-sizing)
 - [CSS Positioned Layout: containing blocks](https://drafts.csswg.org/css-position-3/#def-cb)
 - [CSS Positioned Layout: sticky positioning](https://drafts.csswg.org/css-position-3/#stickypos-insets)
 - [CSS Overflow: overflow properties](https://drafts.csswg.org/css-overflow-3/#overflow-properties)
+- [Angular: component styling and `:host`](https://angular.dev/guide/components/styling)
+- [Angular CLI: `ng generate component` options](https://angular.dev/cli/generate/component)

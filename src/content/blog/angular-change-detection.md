@@ -1,8 +1,8 @@
 ---
 title: "Angular change detection, from notifications to DOM updates"
-description: "Understand Angular change detection by separating scheduling, view checking, signal dependencies, DOM updates, and browser painting."
+description: "Follow a task board's remaining count from your code to the screen: what tells Angular to look, which components it checks, and why a timer or a mutated task can leave the page stale."
 pubDate: "2026-04-28"
-updatedDate: "2026-09-30"
+updatedDate: "2026-10-15"
 tags:
   - angular
   - change-detection
@@ -10,425 +10,498 @@ tags:
   - performance
 ---
 
-A button changes a field and the UI updates. A timer changes the same field and the UI stays stale. Replacing an input object works, but mutating it does not—until another click makes the new value appear.
+Your task board shows "Remaining tasks: 3". You click a button that completes a task, and the count drops to 2. Then you change that handler so the count drops one second later, the way it would after a server confirms the save. Now the count stays at 3. It only catches up when you click a button again.
 
-These are not unrelated Angular exceptions. They involve separate questions:
+The assignment is the same in both handlers, so why does the page update in one case and not the other? The answer comes from what Angular does between your code changing a value and the browser showing it. By the end of this article, you'll be able to look at a stale value on screen and say which step was missing.
 
-1. **Notification:** what tells Angular there is work to do?
-2. **Check:** which views and bindings need evaluation?
-3. **Update:** which changed binding results need to be written to the DOM?
+The examples use Angular 22.2.1 in a new project. Two of its defaults matter here: the app doesn't load a library called Zone.js, and components use a checking strategy called `OnPush`. Both get explained along the way, and the [versions section](#angular-versions-and-defaults) at the end lists when each default arrived.
 
-The browser then decides when to perform rendering work and display the result. Updating application state, updating the DOM, and painting pixels are different milestones.
-
-This article follows that sequence, using current Angular first and then explaining the Zone.js-based model still found in existing applications.
+You'll need basic Angular components for this: a component class, its template, `{{ }}` interpolation, and `(click)` event bindings. The [behavior article's Angular task board](/dump/blog/frontend-evolution-behavior/) introduces them.
 
 ## Contents
 
-1. [Notification, check, update, paint](#notification-check-update-paint)
-2. [Current defaults and independent choices](#current-defaults-and-independent-choices)
-3. [OnPush versus eager checking](#onpush-versus-eager-checking)
-4. [Why a timer can leave the UI stale](#why-a-timer-can-leave-the-ui-stale)
-5. [Input replacement versus mutation](#input-replacement-versus-mutation)
-6. [Signals track dependencies, not deep mutations](#signals-track-dependencies-not-deep-mutations)
-7. [Observables and AsyncPipe](#observables-and-asyncpipe)
-8. [Marking versus checking immediately](#marking-versus-checking-immediately)
-9. [Where Zone.js fits](#where-zonejs-fits)
-10. [A debugging and performance checklist](#a-debugging-and-performance-checklist)
+1. [What happens between your code and the screen](#what-happens-between-your-code-and-the-screen)
+2. [A timer that leaves the count stale](#a-timer-that-leaves-the-count-stale)
+3. [Passing a changed task to a TaskRow](#passing-a-changed-task-to-a-taskrow)
+4. [OnPush and Eager components](#onpush-and-eager-components)
+5. [How signals tell Angular what changed](#how-signals-tell-angular-what-changed)
+6. [Observables and AsyncPipe](#observables-and-asyncpipe)
+7. [Marking a view with markForCheck](#marking-a-view-with-markforcheck)
+8. [How Zone.js-based apps schedule checks](#how-zonejs-based-apps-schedule-checks)
+9. [Debugging a stale value](#debugging-a-stale-value)
+10. [Angular versions and defaults](#angular-versions-and-defaults)
+11. [Why the count stayed stale](#why-the-count-stayed-stale)
 
-## Notification, check, update, paint
+## What happens between your code and the screen
 
-Changing a JavaScript variable does not automatically change the DOM:
+Changing a JavaScript variable only changes a value in memory:
 
 ```ts
-let count = 0;
-count += 1;
+let remaining = 3;
+remaining -= 1;
 ```
 
-Something must connect that state to a displayed value. Angular does this through view synchronization, usually called **change detection**.
+The number `2` now exists in memory, but the page still says 3. The page is drawn from the **DOM**, the browser's live tree of objects for the page's elements and text (the [DOM and events article](/dump/blog/html-dom-and-events/) covers it). Something has to copy the new value into the DOM.
+
+In Angular, that something works per component. When Angular first displays a component, it creates a **view**: one rendered copy of the component's template, made of the DOM nodes it created plus the data Angular keeps to update them. Every expression in the template whose result goes into the page or into a child component is a **binding**. `{{ remaining }}` is a binding, and so is `[task]="task"`. For each binding, Angular records the result it used last time.
+
+Views form a tree that mirrors your components:
+
+```text
+TaskPage view
+  ├── TaskRow view (task 1)
+  └── TaskRow view (task 2)
+```
+
+**Change detection** is how Angular brings those views up to date. It walks the tree from the top, and one walk is called a **pass**. For each view it checks during a pass, it runs every binding expression again and compares each result with the recorded one. Only results that differ get written into the existing DOM nodes, so a check that finds no differences writes nothing. Angular keeps the nodes it created and changes them in place instead of rebuilding the HTML.
+
+Here's the whole path from your assignment to pixels:
 
 ```mermaid
 flowchart LR
-    S[Application state changes] --> N[Angular receives a notification]
-    N --> C[Schedule synchronization and check relevant views]
-    C --> U[Write changed binding results to the DOM]
-    U --> P[Browser rendering opportunity]
+    S[Your code changes a value] --> N[Something notifies Angular]
+    N --> C[Angular checks views]
+    C --> U[Angular writes changed results to the DOM]
+    U --> P[The browser paints]
 ```
 
-The first arrow is not automatic for every state change. A plain assignment inside an arbitrary callback may provide no notification.
+The first arrow is the one that causes most stale screens. Angular doesn't watch your variables, so an assignment on its own notifies nobody. Something has to tell Angular "there may be work to do", and most of this article is about what counts as telling it.
 
-The later arrows also need qualifications:
+The other arrows have details of their own:
 
-- Angular can receive several notifications before one synchronization pass; do not assume one notification means one separate full-tree check.
-- A check can evaluate bindings without changing any DOM value.
-- Angular normally compares a binding's new result with its previously recorded result, not with a fresh inspection of the DOM.
-- DOM writes do not force the browser to paint immediately.
+- Several notifications that arrive close together share one check.
+- Angular compares new binding results with the results it recorded, so it never needs to read the DOM back.
+- Writing to the DOM doesn't draw anything yet. The browser paints after your JavaScript finishes running, so long-running code can delay what you see. The [JavaScript engines and runtimes article](/dump/blog/javascript-engines-and-runtimes/) explains when the browser gets that chance.
 
-A component **view** contains the template work Angular can evaluate, including bindings such as `{{ count }}`. Checking a view is not equivalent to discarding and rebuilding its HTML.
+## A timer that leaves the count stale
 
-For browser scheduling details, see [JavaScript engines and runtimes](/dump/blog/javascript-engines-and-runtimes/). Here, the important distinction is that Angular chooses synchronization work while the browser schedules JavaScript and rendering opportunities.
-
-## Current defaults and independent choices
-
-**Version baseline:** the APIs and behavior below were checked against Angular v22.2.1.
-
-| Version boundary | Change                                                                                                          |
-| ---------------- | --------------------------------------------------------------------------------------------------------------- |
-| Angular v20      | Zoneless change detection is available through `provideZonelessChangeDetection()`                               |
-| Angular v21+     | Zoneless is the default unless the application opts into Zone.js-based change detection                         |
-| Angular v22+     | `OnPush` is the default component strategy; `Eager` names broad checking, and `Default` is its deprecated alias |
-
-In older Angular versions, articles often use “default change detection” to mean both Zone.js scheduling and broad component checking. Those are independent concerns, not one switch.
-
-| Concern             | Choices or mechanisms                                               | What it controls                                          |
-| ------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
-| Scheduling          | Angular notifications; Zone.js integration in zone-based apps       | When synchronization is requested                         |
-| View checking       | `OnPush` or `Eager` (historically `Default`)                        | Whether a reached component view is eligible for checking |
-| Dependency tracking | Signals read by templates, `computed`, and other reactive consumers | Which consumers depend on reactive state                  |
-
-Signals work **with** checking strategies. Zoneless does not mean “signals only,” and `OnPush` does not mean “no Zone.js.”
-
-### Notifications in a zoneless application
-
-Angular's documented notification surfaces include:
-
-- bound template and host listeners;
-- changing a signal read by a template;
-- `ChangeDetectorRef.markForCheck()`, including calls made by `AsyncPipe`;
-- `ComponentRef.setInput()` for dynamically created components;
-- attaching a view that has already been marked dirty.
-
-A changed template-bound input also makes its receiving view eligible for checking while the parent view is being evaluated. Replacing an object in an arbitrary callback does not, by itself, arrange for that parent evaluation to happen.
-
-The practical question is **“what notified Angular?”**, not merely **“what async API completed?”**
-
-## OnPush versus eager checking
-
-`OnPush` lets Angular skip component views that have no reason to refresh. Reasons include changed template-bound inputs, an Angular-handled event in the view or its descendants, explicit marking, and changed signal dependencies read by the template.
-
-`Eager` views are checked eagerly when traversal reaches them. It does not mean a zoneless application watches every ordinary assignment or automatically schedules work after every timer.
-
-Two boundaries matter:
-
-- A clean `OnPush` boundary can prevent broad checking of a subtree.
-- Checking a parent does not force every nested `OnPush` child to refresh. Each child still has its own eligibility conditions.
-
-Angular can also traverse ancestors to reach a descendant needing refresh without reevaluating every ancestor's bindings. Do not treat “traversed” and “checked” as exact synonyms.
-
-### A local event can update a plain field
+Here's the opening scenario as a component. The `setTimeout` call stands in for a server that confirms the save one second later:
 
 ```ts
-import { ChangeDetectionStrategy, Component } from "@angular/core";
+import { Component } from "@angular/core";
 
 @Component({
-  selector: "click-counter",
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: ` <button (click)="increment()">Clicked {{ count }} times</button> `,
-})
-export class ClickCounter {
-  count = 0;
-
-  increment(): void {
-    this.count += 1;
-  }
-}
-```
-
-The field is not a signal. This still works because Angular handles the bound listener and has a reason to check the view after the event.
-
-Explicit `OnPush` declarations in these examples make the intended strategy visible and preserve it when the examples are used with pre-v22 Angular.
-
-An event in a descendant can also make `OnPush` ancestors eligible for checking. It does not make every unrelated `OnPush` sibling eligible.
-
-## Why a timer can leave the UI stale
-
-Compare two delayed updates in a zoneless application:
-
-```ts
-import { ChangeDetectionStrategy, Component, signal } from "@angular/core";
-
-@Component({
-  selector: "delayed-counter",
-  changeDetection: ChangeDetectionStrategy.OnPush,
+  selector: "task-board",
   template: `
-    <button (click)="incrementPlainLater()">Increment plain field later</button>
-    <button (click)="incrementSignalLater()">Increment signal later</button>
-    <p>Plain: {{ plainCount }}</p>
-    <p>Signal: {{ signalCount() }}</p>
+    <button type="button" (click)="completeNow()">Complete a task now</button>
+    <button type="button" (click)="completeLater()">Complete a task in 1 second</button>
+    <p>Remaining tasks: {{ remaining }}</p>
   `,
 })
-export class DelayedCounter {
-  plainCount = 0;
-  readonly signalCount = signal(0);
+export class TaskBoard {
+  remaining = 3;
 
-  incrementPlainLater(): void {
-    setTimeout(() => {
-      this.plainCount += 1;
-    }, 1000);
+  completeNow(): void {
+    this.remaining -= 1;
   }
 
-  incrementSignalLater(): void {
+  completeLater(): void {
     setTimeout(() => {
-      this.signalCount.update((count) => count + 1);
+      this.remaining -= 1;
     }, 1000);
   }
 }
 ```
 
-Assuming no other notifications or forced checks:
+Notice that `remaining` is an ordinary class field and both handlers subtract 1 from it. Start from a fresh page and try this sequence:
 
-| Action                            | State after the timer       | Displayed result                    |
-| --------------------------------- | --------------------------- | ----------------------------------- |
-| Click the plain-field button once | `plainCount` becomes `1`    | The paragraph still shows `0`       |
-| Click the signal button once      | `signalCount()` becomes `1` | The signal paragraph updates to `1` |
+| Step                                                  | `remaining` in memory | Page shows |
+| ----------------------------------------------------- | --------------------- | ---------- |
+| Page loads                                            | `3`                   | 3          |
+| Click **Complete a task in 1 second**, wait 2 seconds | `2`                   | 3          |
+| Click **Complete a task now**                         | `1`                   | 1          |
 
-The initial click notifies Angular **before** the delayed mutation. That does not grant the later timer callback permanent change-detection integration.
+The count skips straight from 3 to 1. The value was already 2 in memory, and the second click made Angular look again.
 
-The signal write supplies a new notification because the template is a tracked consumer. Another later local event or signal notification can make the plain field's already-changed value visible too. That explains many “it updates only when I click somewhere” reports.
+### Why the click works
 
-These one-shot timers demonstrate scheduling, not a background-job design. Long-lived timers and subscriptions still need cleanup when their owning feature is destroyed.
+Angular wraps every listener you write in a template, such as `(click)`. When the event fires, the wrapper marks the component's view as **dirty**, a flag that means "check this view in the next pass". It also marks every view above it, so the pass can reach it from the top. Then it schedules a check and calls your handler. The check runs shortly after your handler returns, so it sees whatever the handler changed.
 
-## Input replacement versus mutation
+So clicking **Complete a task in 1 second** did notify Angular. But that check ran right after the click, a full second before the timer changed `remaining`, so it found nothing new. When the timer callback runs, nothing notifies Angular, and the page keeps showing 3 until the next click.
 
-Here is a parent and child in one file:
+### Why older Angular apps never had this problem
+
+If you've worked on an Angular app created before version 21, timers like this one probably updated the page fine. Those apps load **Zone.js**, a library that wraps browser APIs such as `setTimeout`, promises, and event listeners, and they configure Angular to use it. Angular then hears about callbacks that run inside its zone, including a timer started from a click handler, and runs a check after each one. Their components were also checked on every pass by default. The timer callback finishing was enough.
+
+New apps don't use Zone.js for change detection, so you supply the notification yourself. The [Zone.js section](#how-zonejs-based-apps-schedule-checks) has the details.
+
+### Fixing the count with a signal
+
+A **signal** is a value holder from Angular that knows who reads it. You read it by calling it, `remaining()`, and change it with `.set(...)` or `.update(...)`. The [values article](/dump/blog/values-references-and-identity/#connect-the-model-to-angular) introduces them. Here's the board with `remaining` as a signal:
+
+```ts
+import { Component, signal } from "@angular/core";
+
+@Component({
+  selector: "task-board",
+  template: `
+    <button type="button" (click)="completeNow()">Complete a task now</button>
+    <button type="button" (click)="completeLater()">Complete a task in 1 second</button>
+    <p>Remaining tasks: {{ remaining() }}</p>
+  `,
+})
+export class TaskBoard {
+  readonly remaining = signal(3);
+
+  completeNow(): void {
+    this.remaining.update((count) => count - 1);
+  }
+
+  completeLater(): void {
+    setTimeout(() => {
+      this.remaining.update((count) => count - 1);
+    }, 1000);
+  }
+}
+```
+
+Now the timer's change shows up after one second. While Angular evaluated the template, it noticed the read of `remaining()` and recorded that this view depends on that signal. When the timer writes a new value, the signal marks the view dirty and schedules a check. The write itself is the notification.
+
+## Passing a changed task to a TaskRow
+
+The second common stale screen involves a parent passing an object to a child. This example uses the `Task` shape from the [component composition article](/dump/blog/angular-component-composition/). Save it in `task.ts`:
+
+```ts
+export interface Task {
+  id: number;
+  title: string;
+  done: boolean;
+}
+```
+
+The row here is stripped down to the title, so the example stays about updates. Save it in `task-row.ts`:
+
+```ts
+import { Component, input } from "@angular/core";
+import type { Task } from "./task";
+
+@Component({
+  selector: "task-row",
+  template: `<p>{{ task().title }}</p>`,
+})
+export class TaskRow {
+  readonly task = input.required<Task>();
+}
+```
+
+The page keeps the tasks in a signal and offers two ways to rename the first task:
+
+```ts
+import { Component, signal } from "@angular/core";
+import type { Task } from "./task";
+import { TaskRow } from "./task-row";
+
+@Component({
+  selector: "task-page",
+  imports: [TaskRow],
+  template: `
+    <button type="button" (click)="renameByChangingObject()">Rename by changing the object</button>
+    <button type="button" (click)="renameWithNewObject()">Rename with a new object</button>
+    @for (task of tasks(); track task.id) {
+      <task-row [task]="task" />
+    }
+  `,
+})
+export class TaskPage {
+  readonly tasks = signal<Task[]>([
+    { id: 1, title: "Read the DOM article", done: false },
+    { id: 2, title: "Review the CSS layout", done: false },
+  ]);
+
+  renameByChangingObject(): void {
+    this.tasks()[0].title = "Read the values article";
+  }
+
+  renameWithNewObject(): void {
+    this.tasks.update((tasks) => {
+      const renamed: Task[] = [];
+
+      for (const task of tasks) {
+        if (task.id !== 1) {
+          renamed.push(task);
+          continue;
+        }
+
+        renamed.push({ ...task, title: "Read the values article" });
+      }
+
+      return renamed;
+    });
+  }
+}
+```
+
+Notice the difference between the two methods. The first one changes the `title` property inside the existing task object. The second one builds a new array with a new object for task 1 and leaves task 2's object as it was.
+
+Try each button on a fresh page:
+
+| Button                              | First task in memory      | First row shows           |
+| ----------------------------------- | ------------------------- | ------------------------- |
+| **Rename by changing the object**   | "Read the values article" | "Read the DOM article"    |
+| **Rename with a new object**        | "Read the values article" | "Read the values article" |
+
+Here's what happens after **Rename by changing the object**. The click marks `TaskPage`'s view dirty, so Angular checks it. That check reaches the `[task]="task"` binding for the first row and evaluates it. Before Angular hands a value to a child's input, it compares it with the value it passed last time. It uses `Object.is()` for that comparison, which for objects works like `===`: is this the same object in memory? The [values and identity article](/dump/blog/values-references-and-identity/) explains that kind of equality in detail.
+
+It's the same object, just with a changed property, so Angular doesn't pass a new input. Nothing marked the row dirty, so Angular skips it, and the row keeps showing the old title.
+
+After **Rename with a new object**, the binding produces a different object. Angular passes the new input, marks the row dirty, and checks it, so the row shows the new title.
+
+This can look like Angular forbids changing objects in place. It allows it, but the change doesn't count as a new input. If something else later makes Angular check the row, such as a click on a button inside the row, the row reads `task().title` again and shows whatever the object holds at that moment.
+
+## OnPush and Eager components
+
+The row in the last section was skipped. That means Angular didn't run its bindings at all, so the DOM kept the old text. Angular can skip a component like that because of its **change detection strategy**, a per-component setting with two values.
+
+`OnPush`, the default since Angular 22, lets Angular skip a view unless something has marked it dirty. These are the things that do:
+
+- a template-bound input receives a new value, as compared with `Object.is()`;
+- an event listener in the view's template, or in a component inside it, runs;
+- a signal its template reads gets a new value;
+- code calls `markForCheck()` for it, which the [`AsyncPipe` section](#observables-and-asyncpipe) shows.
+
+`Eager` means Angular checks the view every time a pass reaches it, whether or not anything marked it. You opt into it per component:
 
 ```ts
 import { ChangeDetectionStrategy, Component, input } from "@angular/core";
-
-interface User {
-  name: string;
-}
+import type { Task } from "./task";
 
 @Component({
-  selector: "user-card",
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `<p>{{ user().name }}</p>`,
+  selector: "task-row",
+  changeDetection: ChangeDetectionStrategy.Eager,
+  template: `<p>{{ task().title }}</p>`,
 })
-export class UserCard {
-  readonly user = input.required<User>();
-}
-
-@Component({
-  selector: "user-page",
-  imports: [UserCard],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <button (click)="mutate()">Mutate name</button>
-    <button (click)="replace()">Replace user</button>
-    <user-card [user]="user" />
-  `,
-})
-export class UserPage {
-  user: User = { name: "Alice" };
-
-  mutate(): void {
-    this.user.name = "Maria";
-  }
-
-  replace(): void {
-    this.user = { ...this.user, name: "Maria" };
-  }
+export class TaskRow {
+  readonly task = input.required<Task>();
 }
 ```
 
-After **Mutate name**, the parent is checked because it handled the event. But the child still receives the same object reference. That does not constitute a changed input, so the clean `OnPush` child can remain skipped and continue displaying `Alice`.
+With this row, **Rename by changing the object** updates the title right away. The click makes Angular check `TaskPage`, the pass continues into the row, and an `Eager` row runs its bindings and reads the changed title.
 
-After **Replace user**, the parent evaluates a new reference for the binding. The child receives a changed input and displays `Maria`.
+That sounds convenient, but `Eager` only decides whether a reached view gets checked. It doesn't create notifications, so the timer from the first example would still leave an `Eager` board stale in an app without Zone.js. Its cost is that every pass re-runs the bindings of every `Eager` view it reaches, so the `OnPush` default is usually the better fit. Replace objects instead of changing them in place, and the inputs do the notifying.
 
-The important distinction is not “Angular forbids mutation.” It is that a mutation does not provide a new input value at this boundary. If another reason later causes the child to be checked, it can display the mutated object's current contents.
+Before Angular 22, the eager strategy was called `Default`. That name still works, but it's a deprecated alias for `Eager`.
 
-Using a signal-based input does not turn the incoming object into a deeply observed proxy. Likewise, direct TypeScript assignment to a child's ordinary input property is not equivalent to Angular updating a template binding. For dynamically created components, use the framework's `ComponentRef.setInput()` integration rather than assuming a property assignment will notify it.
+Two more details explain what you see in larger component trees:
 
-## Signals track dependencies, not deep mutations
+- Checking a parent doesn't force its `OnPush` children to refresh. Each child gets checked only if it's dirty, which is exactly what happened to the row.
+- When a signal read only by a child's template changes, Angular walks through the child's ancestors to reach it without re-running the ancestors' bindings. A click or `markForCheck()` marks the ancestors dirty as well, so those passes check the ancestors too.
 
-Signals describe reactive state and derived values:
+## How signals tell Angular what changed
+
+The timer fix worked because the template read a signal. Angular tracks signal reads inside a **reactive context**, which is code that Angular runs while recording which signals it reads. Rendering a template is a reactive context, and so are `computed()` and `effect()`.
+
+Signal reads elsewhere create no dependency. If a click handler or a `setTimeout` callback reads a signal, nothing gets recorded, and that code won't run again when the signal changes. Tracking is also synchronous: in an `async` function, reads after an `await` aren't tracked.
+
+### Deriving the count with computed
+
+On a real task board, the remaining count comes from the tasks rather than living in its own field. `computed()` creates a read-only signal from a calculation:
 
 ```ts
-import { ChangeDetectionStrategy, Component, computed, signal } from "@angular/core";
+import { Component, computed, signal } from "@angular/core";
+import type { Task } from "./task";
 
 @Component({
-  selector: "cart-summary",
-  changeDetection: ChangeDetectionStrategy.OnPush,
+  selector: "task-board",
   template: `
-    <p>Items: {{ itemCount() }}</p>
-    <p>Total: {{ total() }}</p>
-    <button (click)="addItem()">Add item</button>
+    <button type="button" (click)="completeLater(1)">Complete the first task in 1 second</button>
+    <p>Remaining tasks: {{ remaining() }}</p>
   `,
 })
-export class CartSummary {
-  readonly prices = signal([10, 15]);
-  readonly itemCount = computed(() => this.prices().length);
-  readonly total = computed(() => {
-    let total = 0;
+export class TaskBoard {
+  readonly tasks = signal<Task[]>([
+    { id: 1, title: "Read the DOM article", done: false },
+    { id: 2, title: "Review the CSS layout", done: false },
+    { id: 3, title: "Try the change detection examples", done: false },
+  ]);
 
-    for (const price of this.prices()) {
-      total += price;
+  readonly remaining = computed(() => {
+    let count = 0;
+
+    for (const task of this.tasks()) {
+      if (!task.done) {
+        count += 1;
+      }
     }
 
-    return total;
+    return count;
   });
 
-  addItem(): void {
-    this.prices.update((prices) => [...prices, 20]);
+  completeLater(id: number): void {
+    setTimeout(() => {
+      this.tasks.update((tasks) => {
+        const updated: Task[] = [];
+
+        for (const task of tasks) {
+          if (task.id !== id) {
+            updated.push(task);
+            continue;
+          }
+
+          updated.push({ ...task, done: true });
+        }
+
+        return updated;
+      });
+    }, 1000);
   }
 }
 ```
 
-The initial values are two items and a total of `25`. Adding an item creates a new array, invalidates the dependent computations, and the next synchronization displays three items and `45`.
+The page shows 3, and one second after the click it shows 2. Follow the chain: the template reads `remaining()`, and `remaining` reads `tasks()`. The timer writes a new array to `tasks`, which marks `remaining` as out of date. Because the template depends on `remaining`, its view is marked dirty too, and the next check reads the recalculated count.
 
-### Tracking needs a reactive context
+A `computed()` value is lazy and cached. Its calculation runs the first time something reads it, and later reads reuse the result until a signal it read changes. It also tracks only the signals it actually read during its last run, so a signal behind an `if` that didn't run isn't a dependency yet.
 
-Angular tracks signal reads while evaluating a **reactive consumer**, such as a template, `computed()`, or `effect()`. Reading a signal in arbitrary ordinary code does not automatically subscribe that code to future changes.
+For a value derived from other signals, use `computed()`. An `effect()` that copies values into another writable signal does the same job with more ways to get out of sync. Effects are for side effects such as logging or calling a non-Angular library.
 
-Dependencies are dynamic: a computation tracks the signals actually read during its latest evaluation, not every signal mentioned somewhere in the function. Tracking is also synchronous; reads after an `await` are not part of the preceding reactive context.
+### Changing an object inside a signal
 
-### Computed values are lazy and cached
-
-A `computed()` derivation runs when its value is needed, not immediately every time a source signal changes. Angular caches the result. A dependency change invalidates that cache; a later read recomputes it.
-
-For state derived from other state, use `computed()` rather than an `effect()` that copies a value into another writable signal. Effects are for side effects such as logging or integration with non-reactive APIs, not the default tool for state propagation.
-
-### A signal write still has equality semantics
-
-Signals use `Object.is()` equality by default. Mutating the value without changing its reference does not notify consumers:
+Signals use the same `Object.is()` comparison as inputs. A write only notifies anyone when the new value is a different value:
 
 ```ts
 import { signal } from "@angular/core";
+import type { Task } from "./task";
 
-const user = signal({ name: "Alice" });
+const task = signal<Task>({ id: 1, title: "Read the DOM article", done: false });
 
-user().name = "Maria"; // Mutates the object, but sends no signal notification.
-user.set(user()); // Same reference: still no notification under default equality.
+task().done = true; // Changes the object, but tells no one.
+task.set(task()); // Same object, so the signal treats it as unchanged.
 
-user.update((current) => ({ ...current, name: "Maria" })); // New reference.
+task.update((current) => ({ ...current, done: true })); // New object: readers are notified.
 ```
 
-Custom equality functions can change whether a write counts as a change. Readonly signal views prevent writes through the signal API, not deep mutation of their returned objects.
-
-Finally, signals do not give each interpolation its own independent DOM-patching engine. Angular tracks consumers and uses those dependencies to decide what view work is needed. Template bindings still participate in change detection.
+This is the input problem again. A signal holds a reference to the object, so changing a property inside it isn't a signal write. That's why the examples above build new arrays and objects with `update()`. A signal can be given a custom `equal` function that changes which writes count as changes, but the default is `Object.is()`.
 
 ## Observables and AsyncPipe
 
-An observable emission is not, by itself, a template notification. `AsyncPipe` provides that integration:
+This section uses RxJS, the library Angular uses for streams of values. An **observable** is an object that delivers values over time to whatever subscribes to it. Angular's `HttpClient`, for example, returns one for each request. A `$` at the end of a name, as in `tasks$`, is a common convention that marks an observable.
+
+An observable delivering a value doesn't notify Angular by itself. In a template, `AsyncPipe` does that for you:
 
 ```ts
 import { AsyncPipe } from "@angular/common";
-import { ChangeDetectionStrategy, Component } from "@angular/core";
-import { interval } from "rxjs";
+import { Component } from "@angular/core";
+import { delay, of } from "rxjs";
+import type { Task } from "./task";
+import { TaskRow } from "./task-row";
+
+const startingTasks: Task[] = [
+  { id: 1, title: "Read the DOM article", done: false },
+  { id: 2, title: "Review the CSS layout", done: false },
+];
 
 @Component({
-  selector: "elapsed-counter",
-  imports: [AsyncPipe],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `<p>Latest tick: {{ ticks$ | async }}</p>`,
+  selector: "task-list",
+  imports: [AsyncPipe, TaskRow],
+  template: `
+    @if (tasks$ | async; as tasks) {
+      @for (task of tasks; track task.id) {
+        <task-row [task]="task" />
+      }
+    } @else {
+      <p>Loading tasks…</p>
+    }
+  `,
 })
-export class ElapsedCounter {
-  readonly ticks$ = interval(1000);
+export class TaskList {
+  readonly tasks$ = of(startingTasks).pipe(delay(1000));
 }
 ```
 
-The template initially has no emitted tick; after one second it displays `0`, then `1`, and so on. On asynchronous emissions, the pipe marks its containing view for checking. It also manages subscription cleanup when the view is destroyed and switches subscriptions if the supplied source changes.
+`of(startingTasks)` creates an observable that delivers the array once, and `delay(1000)` holds it back for one second, standing in for a server response. The page shows "Loading tasks…" and then the two rows.
 
-A manual subscription that assigns `this.tick = value` to a plain field does not provide the same notification automatically. Use a template-read signal, or explicitly mark the view after assigning the field. The subscription also needs an owner and cleanup, for example through `takeUntilDestroyed()`.
+`tasks$ | async` subscribes to the observable the first time Angular checks the view. Until a value arrives, it returns `null`, so the `@else` branch shows. When the array arrives, the pipe stores it and calls `markForCheck()` on the view, which marks it dirty and schedules a check. When the view is destroyed, the pipe unsubscribes. `AsyncPipe` accepts promises too.
 
-`AsyncPipe` also supports promises; a promise resolves once rather than emitting a continuing sequence.
-
-A useful alternative for component code that needs reactive observable values is `toSignal()` from `@angular/core/rxjs-interop`. It manages the subscription and exposes a signal. Account for its injection-context and initial-value requirements, and create it once rather than recreating subscriptions during template evaluation.
-
-None of these APIs makes the browser paint immediately on receipt of a value. They connect asynchronous state to Angular's synchronization model.
-
-## Marking versus checking immediately
-
-Two similarly named APIs do different jobs:
-
-| API               | Meaning                                                                                |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| `markForCheck()`  | Mark a view for a future synchronization pass; it is a zoneless notification surface   |
-| `detectChanges()` | Perform a local check of the view and its children according to change-detection rules |
-
-For a normal callback updating a plain field, marking is usually the intended integration:
+If you subscribe in the class yourself and assign the result to a plain field, nothing notifies Angular, so the page keeps showing "Loading tasks…" just like the timer example. You'd also have to unsubscribe yourself when the component is destroyed. For observables used in component code, `toSignal()` from `@angular/core/rxjs-interop` subscribes for you and gives you a signal instead:
 
 ```ts
-import { ChangeDetectionStrategy, ChangeDetectorRef, Component, inject } from "@angular/core";
+readonly tasks = toSignal(of(startingTasks).pipe(delay(1000)));
+```
+
+The template then reads `tasks()`, which is `undefined` until the array arrives. Call `toSignal()` in a field initializer like this one, not inside a method, because it needs the component's injection context to unsubscribe when the component is destroyed. The [dependency injection article](/dump/blog/angular-dependency-injection/) explains injection contexts.
+
+## Marking a view with markForCheck
+
+Sometimes you can't use a signal right away, for example in an older component that keeps plain fields. You can still notify Angular yourself. Here's the first `TaskBoard` with its plain `remaining` field, plus one line in the timer callback:
+
+```ts
+import { ChangeDetectorRef, Component, inject } from "@angular/core";
 
 @Component({
-  selector: "marked-counter",
-  changeDetection: ChangeDetectionStrategy.OnPush,
+  selector: "task-board",
   template: `
-    <button (click)="incrementLater()">Increment later</button>
-    <p>{{ count }}</p>
+    <button type="button" (click)="completeLater()">Complete a task in 1 second</button>
+    <p>Remaining tasks: {{ remaining }}</p>
   `,
 })
-export class MarkedCounter {
+export class TaskBoard {
   private readonly changeDetector = inject(ChangeDetectorRef);
-  count = 0;
+  remaining = 3;
 
-  incrementLater(): void {
+  completeLater(): void {
     setTimeout(() => {
-      this.count += 1;
+      this.remaining -= 1;
       this.changeDetector.markForCheck();
     }, 1000);
   }
 }
 ```
 
-The timer now supplies the missing notification. Notice that `ChangeDetectorRef` is injected in the field initializer, not inside the timer callback.
+The count now updates after one second. `ChangeDetectorRef` is Angular's handle on this component's view, and `markForCheck()` marks the view and its ancestors dirty and schedules a check. That's the same thing a click listener does for you. Notice that `inject()` runs in a field initializer, because `inject()` only works while Angular is creating the component, not later inside the timer callback.
 
-`detectChanges()` is not a stronger version to sprinkle everywhere. It changes timing by doing local work immediately. One deliberate use is combining it with a detached view for explicitly controlled refreshes. Detached views are excluded from normal traversal, even when marked; that is an advanced ownership decision, not the starting fix for stale state.
+`ChangeDetectorRef` also has `detectChanges()`, and the two names are easy to mix up:
 
-## Where Zone.js fits
+| Method            | What it does                                              |
+| ----------------- | --------------------------------------------------------- |
+| `markForCheck()`  | Marks the view dirty so the next scheduled pass checks it |
+| `detectChanges()` | Checks this view and its children immediately             |
 
-In a Zone.js-based application, patched asynchronous APIs give Angular broad hints that application state **may** have changed. Angular's zone integration can arrange synchronization after relevant activity inside the Angular zone.
+For a stale value, `markForCheck()` is usually what you want. It's tempting to treat `detectChanges()` as a stronger version, but it does a different job: it runs a check on the spot, outside Angular's normal scheduling. Angular's documentation pairs it with `detach()`, which removes a view from normal passes so that you decide exactly when it refreshes. A detached view stays unchecked during normal passes, even when it's marked dirty.
 
-This is why older eager/default components often updated after a timer assigned a plain field, even though the application supplied no explicit dependency notification.
+## How Zone.js-based apps schedule checks
 
-That model needs limits:
+Apps configured for Zone.js-based change detection schedule checks differently from the examples above. Zone.js wraps the browser's asynchronous APIs, such as timers, promises, and event listeners, and remembers which zone scheduled each callback. Angular runs your event handlers and component code inside its own zone, called the Angular zone, so a timer or promise scheduled from that code also runs its callback there. When work in the Angular zone finishes, Angular runs a change detection pass.
 
-- Zone.js is not a dependency graph and does not know whether a field actually changed.
-- Not every asynchronous API is patched, and work outside the Angular zone does not behave like work inside it.
-- Coalescing and scheduling configuration affect how activity maps to passes; “every promise causes a full render” is inaccurate.
-- Zone-driven scheduling does not remove clean `OnPush` boundaries. A timer can cause a pass without making its `OnPush` component eligible for refresh.
+Loading the Zone.js library isn't enough on its own. An Angular 21 or later app stays zoneless, even when another library loads Zone.js, unless its providers include `provideZoneChangeDetection()`.
 
-`NgZone.runOutsideAngular()` can keep high-frequency work from repeatedly invoking zone-based synchronization. Reentering with `NgZone.run()` matters for zone integration, but it does not substitute for correct `OnPush` marking. In zoneless applications, use the documented notification mechanisms; entering a zone is not the missing notification.
+That's why the plain-field timer worked in older apps. The timer callback finished inside the Angular zone, Angular ran a pass, and the `Default` strategy that those apps used checked every component the pass reached.
 
-Signals, `AsyncPipe`, and explicit marking work in zone-based applications too. Migration is not “rewrite every field as a signal”; it is making the application's update paths supply appropriate notifications.
+Zone.js only tells Angular that some callback in its zone finished, though. It doesn't know whether anything changed, so apps can run passes that find nothing new. It also doesn't change how `OnPush` works. An `OnPush` component that nothing marked dirty is still skipped during a zone-triggered pass, so an `OnPush` component with a plain field and a timer stays stale even with Zone.js.
 
-Reactive forms deserve attention during that migration: programmatic changes such as `setValue()` update form state and emit form observables, but do not automatically schedule zoneless component checking. Connect template-relevant form state to a notification mechanism, rather than assuming every form-model operation is equivalent to a bound user event.
+For work that runs very often, such as a `mousemove` handler, zone-based apps can call `NgZone.runOutsideAngular()` so that callback doesn't trigger passes. In an app without Zone.js, there's no zone to leave or enter, and `NgZone.run()` doesn't supply a notification.
 
-## A debugging and performance checklist
+Signals, `AsyncPipe`, and `markForCheck()` work in zone-based apps too. So moving an app off Zone.js doesn't require rewriting every field as a signal. It means making sure every update path supplies one of those notifications. Reactive forms need attention during that move: programmatic changes such as `setValue()` update the form, but they don't schedule a check on their own. Read form values the template needs through a signal, or mark the view when the form changes.
 
-For a stale UI, follow the value through the full chain:
+## Debugging a stale value
 
-1. **Did the state really change?** Inspect the owning object and distinguish it from another service or component instance.
-2. **What notified Angular?** Identify a bound listener, template-read signal write, `AsyncPipe`, input integration, or explicit mark. A timer completing is not sufficient evidence in a zoneless app.
-3. **Which view is eligible?** Check `OnPush` boundaries and whether the input reference actually changed.
-4. **Did the template establish the dependency?** A signal read in unrelated application code does not make the template a consumer. Deep mutation does not notify by itself.
-5. **Is the view still attached and alive?** Detached views and destroyed owners do not participate in ordinary updates.
-6. **Did the evaluated binding result change?** A new check does not guarantee a new DOM write.
-7. **Are you confusing DOM updates with paint?** Long-running JavaScript can delay visible rendering after state has already changed.
+When the page shows an old value, follow it through the same steps as the diagram at the top:
 
-For performance, measure separate costs instead of assuming `OnPush` solves them all:
+1. **Did the value really change?** Log it or inspect it, and make sure you're looking at the same component or service instance the template uses.
+2. **What notified Angular?** Name it: a template listener, a write to a signal the template reads, `AsyncPipe`, a new input value, or `markForCheck()`. In an app without Zone.js, a timer or a promise finishing doesn't count.
+3. **Is the view allowed to be checked?** For an `OnPush` component, check whether its input actually got a new object or whether code changed the old one in place.
+4. **Does the template read the signal?** A signal read in a click handler or a service doesn't make the template depend on it. Changing an object inside a signal doesn't notify anyone either.
+5. **Is the view still attached and alive?** A detached view or a destroyed component doesn't take part in normal passes.
+6. **Did the binding's result change?** A check that produces the same result writes nothing to the DOM.
+7. **Is the browser getting a chance to paint?** If a long-running piece of JavaScript blocks the main thread, the DOM can already hold the new value while the screen still shows the old one.
 
-| Observed cost                   | What to investigate                                                    |
-| ------------------------------- | ---------------------------------------------------------------------- |
-| Too many synchronization passes | Notification frequency, high-frequency events, zone activity, batching |
-| Too much view evaluation        | Checking boundaries and which consumers are marked                     |
-| Expensive binding work          | Repeated computations, data size, suitable cached derivations          |
-| Expensive DOM/layout work       | Structural changes, large rendered lists, layout-triggering code       |
-| Long main-thread execution      | CPU work, chunking, or workers—not just checking strategy              |
+Tests can hide step 2. If a test calls `fixture.detectChanges()` after every assignment, it forces a check that the real app never gets, so the test passes while the page stays stale. Angular's `TestBed` runs without Zone.js by default, and `await fixture.whenStable()` waits for Angular's own scheduled checks, which exercises the same notification path as the app.
 
-Use Angular DevTools and browser performance profiles on the actual interaction. A cheap check that changes nothing is not automatically the bottleneck.
+## Angular versions and defaults
 
-In zoneless tests, exercise the real update path and allow Angular to synchronize, for example with `await fixture.whenStable()`. Calling `fixture.detectChanges()` after every assignment can make a test pass while hiding the missing notification that production needs. Deliberate local checks still have their uses; they should not replace testing the scheduling contract.
+Older articles and codebases often say "default change detection" for two separate things: Zone.js scheduling, and checking every component on every pass. Newer Angular versions changed those defaults separately:
 
-## Takeaways
+| Version     | Change                                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- |
+| Angular v20 | Apps can drop Zone.js with `provideZonelessChangeDetection()`                                                        |
+| Angular v21 | New apps run without Zone.js by default                                                                              |
+| Angular v22 | `OnPush` is the default strategy, `Eager` names the check-every-pass strategy, and `Default` is its deprecated alias |
 
-- Notification, view checking, DOM updates, and browser painting are separate steps.
-- Zoneless scheduling, `OnPush`, and signals address different concerns and work together.
-- A local bound event can refresh a plain field; a later arbitrary callback needs its own integration.
-- Replacing an input reference and deeply mutating an existing object are different operations.
-- Signals track synchronous reactive reads and use equality to decide whether writes notify consumers.
-- `AsyncPipe` integrates emissions with checking; manual subscriptions need intentional notification and cleanup.
-- Mark for a future pass when that is what you need; do not force immediate checks by habit.
+So when you read older code or answers online, ask which of the two they mean. Both still exist, and they combine: a zone-based app can use `OnPush` components, and an app without Zone.js can use `Eager` ones.
+
+## Why the count stayed stale
+
+The opening board had one assignment in two handlers. The click handler worked because Angular's listener wrapper marked the view dirty and scheduled a check that ran after the handler. The timer callback ran a second later with nothing to notify Angular, so the new value sat in memory until the next click.
+
+Every fix in this article supplies a notification in a different way: a signal write, a new input object, `AsyncPipe`, or `markForCheck()`. When a value on screen is stale, ask what told Angular to look, and whether the view holding it was allowed to be checked.
 
 ## Sources and further reading
 

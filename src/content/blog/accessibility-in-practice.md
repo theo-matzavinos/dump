@@ -1,99 +1,96 @@
 ---
 title: "Making the whole interaction accessible"
-description: "Follow a task from keyboard activation to dialog editing, feedback, and a sensible focus destination—not just a collection of ARIA attributes."
+description: "Follow one task from a named Edit button through a modal editor, error and status messages, and a sensible focus destination after every action."
 pubDate: "2026-10-06"
+updatedDate: "2026-10-15"
 tags:
   - accessibility
   - angular
   - frontend
 ---
 
-A task interface can look complete and still fail halfway through an interaction. An Edit icon may have no useful name. An editor may open while keyboard focus stays behind it. Deleting a row may remove the very button someone was using, leaving no clear place to continue.
+Someone is using the task list with only a keyboard and a screen reader. They Tab to a button, and the screen reader says "button", but not what it does. They press it anyway. An editor opens, but their keyboard is still on the list behind it. They delete the task from the editor, the button they came from disappears, and focus falls back to the start of the page. Every screenshot of this interface looks fine. The task still failed.
 
-Accessibility means people can perceive the information, operate the controls, understand the result, and continue. A useful check is therefore a whole task—not whether each element has an attribute containing `aria`.
+So this article checks one thing: can someone get all the way through a task, from finding the right control to knowing where they ended up? It builds the task list's Edit, Delete, and complete actions, and checks each step along the way.
 
-This article follows the task interface from the [component ownership article](/dump/blog/angular-component-composition/). It uses ordinary HTML controls and an Angular editor shown in a native dialog. The examples use Angular 22.2.1 and the [styling article's Tailwind 4 setup and dark/light palette](/dump/blog/frontend-evolution-styling/#define-the-shared-palette-once).
-
-The previous editor was non-modal: filtering could happen while it stayed open. This example deliberately changes that interaction. A **modal** editor temporarily prevents interaction with the rest of the page until it closes. That is useful here for demonstrating entry, dismissal, and focus restoration; a dialog is not automatically better than an inline editor.
+You'll need the [component composition article](/dump/blog/angular-component-composition/) for Angular's `input()`, `output()`, and how the page and the task editor split the task data. The examples use Angular 22.2.1 and the [styling article's Tailwind 4 setup and dark and light palette](/dump/blog/frontend-evolution-styling/#define-the-shared-palette-once). You can skip over the long `class="…"` strings; they only control appearance, and the [Contrast, target size, and zoom](#contrast-target-size-and-zoom) section explains the few that matter here.
 
 ## Contents
 
-1. [The interface has more than one representation](#the-interface-has-more-than-one-representation)
-2. [Native semantics provide behavior and meaning](#native-semantics-provide-behavior-and-meaning)
-3. [Keyboard operation is an interaction contract](#keyboard-operation-is-an-interaction-contract)
-4. [Focus must survive changes to the interface](#focus-must-survive-changes-to-the-interface)
-5. [State and feedback must be perceivable](#state-and-feedback-must-be-perceivable)
-6. [Visual styling still carries responsibilities](#visual-styling-still-carries-responsibilities)
-7. [Verify the complete task](#verify-the-complete-task)
+1. [What a screen reader gets from the page](#what-a-screen-reader-gets-from-the-page)
+2. [Use the native element for the job](#use-the-native-element-for-the-job)
+3. [Using the page with only a keyboard](#using-the-page-with-only-a-keyboard)
+4. [Where focus goes after each action](#where-focus-goes-after-each-action)
+5. [Help text, errors, and status messages](#help-text-errors-and-status-messages)
+6. [Edit a task in a modal dialog](#edit-a-task-in-a-modal-dialog)
+7. [Contrast, target size, and zoom](#contrast-target-size-and-zoom)
+8. [Put the page together](#put-the-page-together)
+9. [Walk the whole task with a keyboard](#walk-the-whole-task-with-a-keyboard)
 
-## The interface has more than one representation
+## What a screen reader gets from the page
 
-Imagine a button drawn as a pencil. A sighted person may recognize the drawing and infer “edit this task.” That inference is not necessarily information the browser can give another tool.
+Imagine a button drawn as a pencil. A sighted person sees the drawing and guesses "edit this task". A screen reader can't see the drawing, so that guess never reaches its user.
 
-There are several related representations:
+A screen reader is one kind of **assistive technology**: software or hardware that lets people use a computer in ways other than looking at the screen and using a mouse. Voice control software, which lets someone say "click Edit", and switch devices, which let someone operate everything with one or two buttons, are others.
+
+These programs don't read pixels or HTML. They ask the operating system questions such as "what's on screen?", "what has focus?", and "what is this thing called?". The operating system interface that answers them is an **accessibility API**. For a web page, the browser supplies the answers, and it builds them from the **accessibility tree**: a simplified version of the DOM that keeps the useful parts, such as buttons, headings, text, and form fields, and leaves out wrappers that exist only for layout.
+
+So the same page exists in three forms:
 
 - The **visual interface** is what the browser draws: text, colors, positions, and shapes.
 - The **DOM** is the live structure of elements and text that JavaScript and Angular work with.
-- The **accessibility tree** is the browser's representation for accessibility APIs. It exposes useful objects and properties, rather than simply repeating every DOM element.
+- The **accessibility tree** is what assistive technology gets, through the accessibility API.
 
-Assistive technology uses those APIs to present or operate the interface. For example, a screen reader can announce controls and let someone navigate by headings. It does not just read every HTML tag aloud.
-
-For a control, three properties are especially useful:
+For each control in that tree, three properties matter most:
 
 | Property        | The question it answers        | Task example                    |
 | --------------- | ------------------------------ | ------------------------------- |
 | Role            | What kind of thing is this?    | Button, checkbox, or text field |
-| Accessible name | Which thing or action is it?   | “Edit Read the DOM article”     |
+| Accessible name | Which thing or action is it?   | "Edit Read the DOM article"     |
 | State           | What is its current condition? | Checkbox checked; input invalid |
 
-### Names identify; descriptions explain
+### Accessible names
 
-An **accessible name** is the label the browser computes for an object. It answers “What is this control or region?” A button's text often supplies it. An associated `<label>` supplies a text field's name.
+The **accessible name** is the label the browser works out for an element. A screen reader reads it out, and voice control software listens for it. A button's text usually becomes its name, and a `<label>` linked to a text field becomes that field's name.
 
-An **accessible description** supplies additional information: instructions, a format requirement, or a validation message. It answers “What else should someone know about using this?” It does not replace the name.
+When there's no suitable text, ARIA can supply one. **ARIA** (Accessible Rich Internet Applications) is a set of HTML attributes, most of them starting with `aria-`, that change what the accessibility tree reports about an element. They don't change how the element looks or behaves. Two of them set the name:
 
-These three attributes have two different jobs:
+| Attribute         | Where the name comes from                          |
+| ----------------- | -------------------------------------------------- |
+| `aria-label`      | Text written directly in the attribute             |
+| `aria-labelledby` | The text of other elements, referenced by their IDs |
 
-| Attribute          | Job                                     | Where the text comes from                             |
-| ------------------ | --------------------------------------- | ----------------------------------------------------- |
-| `aria-label`       | Supplies the accessible **name**        | Text written directly in the attribute                |
-| `aria-labelledby`  | Supplies the accessible **name**        | Text from elements referenced by their IDs            |
-| `aria-describedby` | Supplies the accessible **description** | Supporting text from elements referenced by their IDs |
-
-This small dialog excerpt illustrates the two separate properties:
+For example, this dialog gets its name from its heading:
 
 ```html
-<dialog aria-labelledby="example-heading" aria-describedby="example-help">
+<dialog aria-labelledby="example-heading">
   <h2 id="example-heading">Edit task title</h2>
-  <p id="example-help">Save accepts your changes. Cancel discards them.</p>
   <!-- Editor controls would go here. -->
 </dialog>
 ```
 
-The dialog's **name** is “Edit task title”. Its **description** is “Save accepts your changes. Cancel discards them.” The heading identifies the dialog; the paragraph explains how the edit works.
+A screen reader announces the dialog as "Edit task title, dialog". `aria-label="Edit task title"` would give it the same name, but then the heading and the attribute are two copies of the same text that can drift apart. When visible text already says the right thing, point to it with `aria-labelledby`. For form fields, use a native `<label>`.
 
-Using `aria-label="Edit task title"` instead of `aria-labelledby` would supply that same name directly, without referencing the heading. When suitable visible text already exists, referencing it avoids maintaining a separate copy of the name. For ordinary form fields, prefer their native `<label>` and use `aria-describedby` to associate additional help or errors.
+How a name is spoken depends on the screen reader and its settings. The name is the information; the exact sentence isn't up to you.
 
-Names and descriptions are separate browser properties, not a promise of an exact spoken sentence or announcement order. Screen-reader presentation and settings vary.
+An icon-only button with no name is announced as just "button". The icon looks obvious on screen, but the browser has no way to turn a drawing into a name. Giving it a name fixes that one problem, but the keyboard, the feedback, and the focus still need checking, and the rest of this article covers them.
 
-The browser does not reliably infer an action from an arbitrary drawing. An unnamed icon-only button is therefore incomplete even if the icon looks obvious. Fixing only that name still leaves keyboard behavior, feedback, and focus to examine.
+## Use the native element for the job
 
-## Native semantics provide behavior and meaning
-
-Use elements that match the job:
+Pick the HTML element that matches what the control does:
 
 - A `<button>` performs an action.
-- An `<a href="…">` navigates to a location.
-- An `<input type="checkbox">` represents a checked or unchecked choice.
-- A `<label>` connects a control to its label and expands the area that can activate it.
+- An `<a href="…">` goes to another location.
+- An `<input type="checkbox">` is a checked or unchecked choice.
+- A `<label>` names its control, and clicking the label activates the control too.
 
-These choices supply browser behavior as well as meaning. A native button participates in keyboard navigation and can be activated with the keyboard. A checkbox exposes its checked state. A link offers navigation behavior such as opening its destination in another tab.
+These elements come with behavior as well as a role. A button can be reached with Tab and pressed with Enter or Space. A checkbox reports whether it's checked. A link can be opened in a new tab.
 
-The [HTML and events article](/dump/blog/html-dom-and-events/) explains these mechanisms. Replacing a button with a clickable `<div>` discards useful behavior; adding `role="button"` describes the intended role but does not implement focusability or Enter/Space activation.
+A clickable `<div>` gets none of that. Adding `role="button"` makes the accessibility tree call it a button, but it still can't be reached with Tab, and Enter and Space still do nothing. The [HTML and events article](/dump/blog/html-dom-and-events/) shows how these native behaviors work.
 
 ### Start with visible labels
 
-This independent HTML example gives the field a visible label and associates it through matching `for` and `id` values:
+Give each field a visible label, linked by matching `for` and `id` values:
 
 ```html
 <label for="task-title">Task title</label>
@@ -101,75 +98,196 @@ This independent HTML example gives the field a visible label and associates it 
 <button type="submit">Add task</button>
 ```
 
-Put these controls inside a form when implementing submission. A placeholder is not a replacement for the label: it can disappear as someone types, and instructions should not depend on remembering it.
+A placeholder can't replace the label. It disappears as soon as someone starts typing, so they'd have to remember what it said.
 
-For repeated actions, include their target in the accessible name. The complete Angular example uses visible “Edit” text and an accessible name such as “Edit Read the DOM article.” Its `[attr.aria-label]="'Edit ' + task.title"` binding supplies that name without changing the visible button text. Keeping the visible action word in that name also helps people who operate controls by speaking their labels.
+### Name repeated actions after their task
 
-If an icon accompanies that text, make a purely decorative SVG `aria-hidden="true"` so it does not add a redundant name. If the icon is the only visible content, give the button a useful name; the icon still does not implement the action.
+Every row has an Edit button. If each one is only called "Edit", a screen reader user moving through the buttons hears "Edit, button" over and over, with no idea which task each one edits. So the page's Angular template gives each button a name that includes the task:
 
-### Structure is also information
+```html
+<button type="button" [attr.aria-label]="'Edit ' + task.title">Edit</button>
+```
 
-Headings describe sections. A list identifies a collection of tasks. A main region identifies the page's primary content. These help someone navigate without scanning positions on a screen.
+The button still shows "Edit", but its accessible name is "Edit Read the DOM article". The name starts with the visible word on purpose: someone using voice control says what they see, "click Edit", and that only works if the visible text is part of the name.
 
-ARIA—**Accessible Rich Internet Applications**—provides attributes for roles, states, and relationships that native HTML does not already express adequately. Use it to supplement the structure, not as a parallel fictional interface. Setting `aria-checked="true"` on arbitrary markup neither checks a native checkbox nor changes the task record.
+If you add an icon next to the text, mark a purely decorative SVG with `aria-hidden="true"`, so it doesn't add anything to the name. If the icon is the only thing inside the button, the button needs an `aria-label`.
 
-## Keyboard operation is an interaction contract
+### Structure is information too
 
-Keyboard **focus** identifies the element that receives keyboard interaction. It is distinct from selecting a task or marking it complete. In JavaScript, `document.activeElement` identifies the currently focused element within that document.
+Headings, lists, and landmarks such as `<main>` describe how the page is organized. Screen reader users jump between headings and landmarks the way sighted people scan the page, so use real `<h1>`, `<h2>`, `<ul>`, and `<main>` elements instead of styled `<div>` elements.
 
-Try the ordinary controls before adding keyboard handlers:
+Use ARIA only for things HTML can't already say. A `<span role="checkbox" aria-checked="true">` is reported as a checked checkbox, but that's all ARIA does. The span can't be reached with Tab, pressing Space doesn't toggle it, and `aria-checked` stays `"true"` unless your code changes it. A real `<input type="checkbox">` handles the keyboard and reports its own checked state for you. Updating the task record is still your code's job, which is what the `(change)` handler does later in this article.
 
-| Control    | Ordinary keyboard interaction                                               |
-| ---------- | --------------------------------------------------------------------------- |
-| Button     | Tab to it; activate with Enter or Space                                     |
-| Checkbox   | Tab to it; toggle with Space                                                |
-| Text field | Type; in a suitable form, Enter can submit                                  |
-| Select     | Use its native keyboard choices; exact popup interaction varies by platform |
+## Using the page with only a keyboard
 
-Tab moves through the page's sequential focus order; Shift+Tab moves backward. Native controls normally participate without an added `tabindex`.
+Keyboard **focus** marks the one element that receives key presses. It's separate from completing a task or selecting it: a checkbox can have focus whether it's checked or not. In JavaScript, `document.activeElement` is the element that currently has focus.
 
-The `tabindex` attribute changes focus participation:
+Native controls already work with the keyboard:
 
-- `tabindex="0"` includes an otherwise suitable element in the normal sequential order.
-- `tabindex="-1"` leaves it out of that order but allows programmatic focus, useful for a heading that is a deliberate focus destination.
-- Positive values create a priority order ahead of normal controls. Avoid them as a repair for confusing layout; fix the structure instead.
+| Control    | Keyboard interaction                                                    |
+| ---------- | ----------------------------------------------------------------------- |
+| Button     | Tab to it; press with Enter or Space                                    |
+| Checkbox   | Tab to it; toggle with Space                                            |
+| Text field | Type; inside a form, Enter can submit it                                |
+| Select     | Change the choice with the arrow keys; the exact popup varies by platform |
 
-A focusable `<div>` is not yet an operable button. Similarly, being reachable by Tab does not supply the keyboard model of a custom menu or grid. If a genuine custom widget is necessary, follow its established interaction pattern rather than inventing unrelated key bindings.
+Tab moves forward through the page's controls in order, and Shift+Tab moves back. Native controls are in that order without any extra attribute.
 
-Keep DOM order meaningful, and do not visually reorder controls into a contradictory sequence. Show a visible focus indicator. An action must not require hovering to discover or operate it.
+The `tabindex` attribute changes it:
 
-Browser and operating-system settings can affect which controls Tab visits. Test the supported environment and its keyboard settings; do not compensate for a platform difference by assigning positive `tabindex` values everywhere.
+- `tabindex="0"` adds an element that isn't normally focusable to the Tab order, in its place in the document.
+- `tabindex="-1"` keeps an element out of the Tab order but lets code call `focus()` on it, which is useful for a heading you want to move focus to.
+- A positive value pulls the element ahead of everything else in the Tab order. Avoid it: it makes the order jump around, and fixing the HTML order is almost always the real fix.
 
-## Focus must survive changes to the interface
+Making a `<div>` focusable with `tabindex="0"` still doesn't make it a button: Enter and Space do nothing until you write that code too. Custom widgets such as menus and grids have established keyboard patterns, which the [ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/) describes. Follow those instead of inventing your own keys.
 
-Angular can create and remove the editor correctly without deciding where a person should continue. That destination is part of the interaction design.
+A few more rules keep keyboard use predictable:
 
-For this task interface:
+- Keep the HTML order in the order things appear on screen. If CSS moves controls around visually, Tab still follows the HTML.
+- Show where focus is. The examples use `focus-visible:outline-*` classes for a clear outline.
+- Never put an action only behind a mouse hover. Keyboard users can't hover.
+
+Browser and operating system settings can change which controls Tab visits, so test with the browsers and settings you support. Don't try to compensate with positive `tabindex` values.
+
+## Where focus goes after each action
+
+When an action removes or covers the element that has focus, the browser doesn't decide where the person should continue. If your code doesn't decide either, focus can end up on the `<body>`, and a keyboard user has to Tab from the top of the page again. So decide a destination for every action:
 
 ```text
 Edit button → title field inside the modal editor
-Save/Cancel/Escape → the Edit button that opened it
+Save, Cancel, or Escape → the Edit button that opened it
 Delete edited task → filter control, because that Edit button is removed
 Complete a task hidden by the current filter → filter control
 ```
 
-The filter is a stable destination here: it remains available and lets someone reveal more tasks. Another interface might sensibly choose the next row or an Add button instead.
+The filter is a good destination here because it never goes away, and it lets someone show more tasks. Another interface might reasonably choose the next row, or an Add button.
 
-### Native dialog behavior is a useful primitive
+Clicking Edit opens the title editor in a modal dialog, which the [dialog section](#edit-a-task-in-a-modal-dialog) builds. The browser already handles the first two lines of the table for a modal dialog: it moves focus into the dialog when it opens, and back to the element that had focus before it opened when it closes. The page component, `TaskPage`, handles the rest. Here are its three methods that move focus; the [complete page](#put-the-page-together) comes later.
 
-Calling `showModal()` on a connected `<dialog>` draws it above ordinary page content in the browser-managed **top layer** and makes the rest of that document inert. **Inert** means that background content cannot be interacted with normally and is excluded from the accessibility tree. This is more than painting a dark rectangle over the page.
+First, starting an edit:
 
-The browser runs dialog focusing behavior. An `autofocus` attribute identifies the intended initial control. A short title editor starts at its title field; a long dialog may need a different initial destination so its introduction is not skipped.
+```ts
+startEditing(id: number, opener: HTMLButtonElement) {
+  opener.focus();
+  this.editingId.set(id);
+}
+```
 
-Closing a native dialog normally restores the previously focused element. Escape requests cancellation and produces a cancelable `cancel` event. These are browser mechanisms, not features that an `aria-modal` attribute creates.
+The page focuses the Edit button before it creates the editor, because the button that has focus when the dialog opens is where the browser sends focus back. Clicking a button usually focuses it, but not in every browser: Safari, for example, doesn't focus a button when you click it. Without this line, a Safari user who clicked Edit would end up somewhere else after Cancel. The rows are tracked by `task.id`, so after a title changes, Angular keeps the same row and the same button, and focus has somewhere to return to.
 
-`show()`, an `open` attribute, and `showModal()` are not interchangeable. The first two can display a non-modal dialog; they do not create this modal background behavior. A native dialog opened with `showModal()` supplies dialog/modal semantics, so the example does not add a redundant `role="dialog"` or use ARIA to simulate modality.
+Next, completing a task:
 
-Native behavior is a starting point, not permission to skip naming, appropriate initial focus, a visible dismissal action, or browser/assistive-technology testing.
+```ts
+setDone(task: Task, done: boolean, filterSelect: HTMLSelectElement) {
+  const updated = this.tasks().map((current) => {
+    if (current.id === task.id) {
+      return { ...current, done };
+    }
+    return current;
+  });
+  this.tasks.set(updated);
 
-### An Angular editor with an explicit close path
+  const hiddenByActiveFilter = this.filter() === "active" && done;
+  const hiddenByCompletedFilter = this.filter() === "completed" && !done;
+  if (hiddenByActiveFilter || hiddenByCompletedFilter) {
+    filterSelect.focus();
+  }
+  this.status.set(`Completion updated. Remaining tasks: ${this.remaining()}.`);
+}
+```
 
-Keep the shared `Task` interface from the previous article in `task.ts`:
+Focus only moves when the current filter is about to remove the row, and with it the checkbox that has focus. Under the All filter, the checkbox stays, so focus stays on it.
+
+Last, deleting a task:
+
+```ts
+removeTask(task: Task, filterSelect: HTMLSelectElement) {
+  const kept = this.tasks().filter((current) => current.id !== task.id);
+  this.tasks.set(kept);
+  if (this.editingId() === task.id) {
+    this.editingId.set(undefined);
+  }
+  filterSelect.focus();
+  this.status.set(`Deleted "${task.title}". Remaining tasks: ${this.remaining()}.`);
+}
+```
+
+Deleting always removes the row, so focus always moves to the filter. It moves before Angular updates the page and removes the row, so focus never lands on an element that's about to disappear. The same method runs for the Delete button in the row and for the Delete button in the editor.
+
+Everything else leaves focus alone. Changing the filter keeps focus on the select, and updating the count or a status message never moves it.
+
+## Help text, errors, and status messages
+
+Completion has to be perceivable without seeing the strike-through. The checkbox's checked state tells the accessibility tree, and the page also shows the word "Completed" or "Active" as text in each row, so it doesn't rely on color or line style alone.
+
+### Connect help and errors to the field
+
+A field's name says what it is. Sometimes it also needs instructions, or an error message after a failed save. That extra text is the field's **accessible description**. Screen readers usually read it after the name and role, for example "Task title (required), edit text, Enter a title for the task."
+
+`aria-describedby` builds the description from other elements, listed by their IDs and separated by spaces. Here's a field after a failed submission:
+
+```html
+<label for="example-title">Task title (required)</label>
+<p id="example-title-hint">Enter a title for the task.</p>
+<input
+  id="example-title"
+  name="title"
+  type="text"
+  required
+  aria-invalid="true"
+  aria-describedby="example-title-hint example-title-error"
+/>
+<p id="example-title-error" aria-live="polite">Enter a task title, not just spaces.</p>
+```
+
+What to notice:
+
+- The name, "Task title (required)", comes from the label. The description combines the hint and the error message, in the order the IDs are listed.
+- `aria-invalid="true"` tells the screen reader the value failed validation. It doesn't say what went wrong; the error message does that.
+- Placing the error next to the field isn't enough. Unless the field's `aria-describedby` lists the error's ID, a screen reader doesn't connect the two.
+- Keep the hint's ID when you add the error's ID. If an implementation only creates the error paragraph when there's an error, it also has to add and remove that ID.
+
+A description is read when someone moves to the field. It isn't necessarily read when it changes while they're already there. That's what `aria-live="polite"` on the error paragraph is for: it asks the screen reader to read the new text when it appears.
+
+In the examples, a failed submission shows the error, sets `aria-invalid`, and puts focus on the field. Typing clears both again. Don't mark an untouched field invalid before anyone has tried to submit it.
+
+The forms use `novalidate`, which turns off the browser's automatic validation bubbles, so the examples can show their own error text under the field. `required` stays, so the field still reports itself as required, and the submit code also rejects titles made only of spaces. The [forms article](/dump/blog/forms-and-validation/) covers validation properly.
+
+### Status messages without moving focus
+
+After a successful save, "Task title saved." appears in a **live region**: an element whose text changes a screen reader reads out, without the person moving there.
+
+The page uses `role="status"` for its live region. That role is **polite**: the screen reader waits until it finishes what it's currently reading. When the status text changes from "Completion updated. Remaining tasks: 2." to "Completion updated. Remaining tasks: 1.", only the number changed. `aria-atomic="true"` tells the screen reader to read the whole message again rather than just "1". `role="status"` already implies that, and the page sets it explicitly anyway.
+
+For a message that needs attention right away, there's `role="alert"`, which interrupts. Save it for urgent problems, not counts or successes. The title errors use polite announcements too: they follow the person's own submission, so there's nothing to interrupt.
+
+The page has one status region, and its messages include the remaining count when it changed. Making the whole task list a live region would read out every changed row; a second live region on the count would announce the same change twice.
+
+Screen readers and browsers differ in when and how they read live regions, and repeating identical text may not be announced again. Keep the region in the page from the start and only change its text, then listen to what's actually announced before adding anything more complicated.
+
+## Edit a task in a modal dialog
+
+In the composition article, the editor was part of the page, and you could keep changing the filter while it was open. That's a **non-modal** editor. This one is **modal**: while it's open, the rest of the page can't be used until it closes. That shows off focus entering and leaving the editor, but it isn't automatically better; an inline editor is a fine choice too.
+
+### What showModal() gives you
+
+Calling `showModal()` on a `<dialog>` element that's in the page does three things:
+
+- It draws the dialog above everything else, in a browser-managed layer called the **top layer**.
+- It makes the rest of the document **inert**: nothing behind the dialog can be clicked, focused, or found in the accessibility tree. Tab and Shift+Tab stay inside the dialog and the browser's own controls.
+- It moves focus into the dialog. If an element inside has the `autofocus` attribute, that element gets focus. A short title editor should start in its title field; a long dialog might start at its heading, so the introduction isn't skipped.
+
+When the dialog closes, the browser puts focus back on the element that had it when `showModal()` ran.
+
+Pressing Escape also closes a modal dialog. Before closing it, the browser fires a `cancel` event on the dialog. Calling `event.preventDefault()` inside the handler for that event tells the browser to skip its own close. The editor uses that to send Escape through the same code as its Cancel button, which closes the dialog and also tells the page that editing ended.
+
+`show()` and the `open` attribute also display a dialog, but non-modally: the page behind stays usable and nothing becomes inert. Only `showModal()` does all of the above. And the `aria-modal="true"` attribute only tells the accessibility tree that a dialog is modal; it doesn't make anything inert or move focus. `showModal()` already reports the dialog as modal, so the editor doesn't need `role="dialog"` or `aria-modal`.
+
+`showModal()` handles the inert background and returning focus. You still have to give the dialog a name, choose which control gets focus first, give it a visible Cancel button, and try it with a screen reader.
+
+### The editor component
+
+The editor uses the same `Task` interface as the previous articles, in `task.ts`:
 
 ```ts
 export interface Task {
@@ -179,7 +297,119 @@ export interface Task {
 }
 ```
 
-Save this editor in `task-editor.ts`. It owns the draft and the native dialog. The page will own the accepted record and whether the editor exists.
+The editor goes in `task-editor.ts`. It keeps the unfinished title and the native dialog. The page keeps the accepted tasks and decides whether an editor exists. Here it is in three pieces, with the styling classes left out; the complete file comes after them.
+
+First, the dialog and its title field, from the editor's template:
+
+```html
+<dialog #dialogElement aria-labelledby="editor-heading" (cancel)="cancelFromBrowser($event)">
+  <h2 id="editor-heading">Edit task title</h2>
+  <form novalidate (submit)="submitTitle($event, titleInput)">
+    <label for="draft-title">New task title (required)</label>
+    <p id="draft-hint">Save accepts the title. Cancel discards this edit.</p>
+    <input
+      #titleInput
+      id="draft-title"
+      name="title"
+      type="text"
+      required
+      autofocus
+      aria-describedby="draft-hint draft-error"
+      [attr.aria-invalid]="error() !== ''"
+      [value]="draftTitle()"
+      (input)="draftTitle.set(titleInput.value); error.set('')"
+    />
+    <p id="draft-error" aria-live="polite">{{ error() }}</p>
+    <!-- Save, Cancel, and Delete buttons -->
+  </form>
+</dialog>
+```
+
+What to notice:
+
+- **Names and descriptions.** The heading names the dialog through `aria-labelledby`. The field gets its own name from its label, and the hint and error paragraphs as its description, as in the previous section.
+- **Initial focus.** `autofocus` makes the title field the control that gets focus when the dialog opens.
+- **Escape.** `(cancel)` runs `cancelFromBrowser` when the browser fires the `cancel` event.
+
+The buttons at the end of the form:
+
+```html
+<button type="submit">Save title</button>
+<button type="button" (click)="dismiss()">Cancel</button>
+<button type="button" (click)="dialogElement.close(); deleteRequested.emit()">
+  Delete edited task
+</button>
+```
+
+Next, the class's inputs, outputs, and state, and the code that opens the dialog:
+
+```ts
+readonly task = input.required<Task>();
+readonly titleSubmitted = output<string>();
+readonly cancelled = output<void>();
+readonly deleteRequested = output<void>();
+readonly error = signal("");
+readonly draftTitle = linkedSignal<Task, string>({
+  source: this.task,
+  computation: (task, previous) => {
+    if (previous?.source.id === task.id) {
+      return previous.value;
+    }
+
+    return task.title;
+  },
+});
+readonly dialog = viewChild.required<ElementRef<HTMLDialogElement>>("dialogElement");
+
+constructor() {
+  afterNextRender(() => {
+    this.dialog().nativeElement.showModal();
+  });
+}
+```
+
+What to notice:
+
+- **Opening.** `viewChild.required(...)` finds the `<dialog>` in the editor's template. `afterNextRender` runs its callback once Angular has put the template in the page, so `showModal()` runs on an element that exists. It doesn't run during server-side rendering, which is fine for a dialog that only opens after a click.
+- **The draft.** `linkedSignal` creates a signal you can write to, like `signal`, that also recalculates when its `source` changes. Typing writes to `draftTitle`. When the page passes in a new `task` object, Angular calls `computation` with the new task and `previous`, the last task and draft. If the ID is the same, the page only replaced the object (for example, because `done` changed), so the draft keeps what was typed. A different task starts a fresh draft from its title.
+
+Last, the methods that close the dialog:
+
+```ts
+submitTitle(event: SubmitEvent, inputElement: HTMLInputElement) {
+  event.preventDefault();
+  const title = this.draftTitle().trim();
+
+  if (title === "") {
+    this.error.set("Enter a task title, not just spaces.");
+    inputElement.focus();
+    return;
+  }
+
+  this.dialog().nativeElement.close();
+  this.titleSubmitted.emit(title);
+}
+
+dismiss() {
+  this.dialog().nativeElement.close();
+  this.cancelled.emit();
+}
+
+cancelFromBrowser(event: Event) {
+  event.preventDefault();
+  this.dismiss();
+}
+```
+
+What to notice:
+
+- **Errors.** A title made only of spaces sets `error`, which fills the error paragraph and sets `aria-invalid`, and focus goes back to the field.
+- **Closing before telling the page.** Save, Cancel, and Delete each call `close()` first and only then emit an output. While the dialog is still in the page, closing it lets the browser end the modal state and return focus to the Edit button. Then the page removes the editor. If the page removed the dialog while it was still open, that close step wouldn't run, and focus wouldn't go back to the Edit button.
+- **Escape.** `cancelFromBrowser` stops the browser's own close and calls `dismiss()` instead, so Escape closes the dialog and the page hears `cancelled`. Escape still always closes the editor, and it never saves the draft.
+- **Delete.** Deleting closes the dialog first too, but its focus destination is the filter, because `removeTask` removes the row with the Edit button in it.
+
+<details>
+<summary>The complete <code>task-editor.ts</code></summary>
 
 ```ts
 import {
@@ -299,86 +529,36 @@ export class TaskEditor {
 }
 ```
 
-`viewChild.required(...)` finds the native dialog in the editor's template. The constructor registers `afterNextRender`, so `showModal()` runs after Angular renders it, rather than trying to use an element during class initialization. The callback does not run during server-side rendering; this is a client-side interaction example.
 
-The heading names the dialog through `aria-labelledby`. The field has its own visible label; that name is distinct from the dialog's name. The `linkedSignal` uses the same intentional draft policy explained in the ownership article, without mutating the accepted task.
+</details>
 
-Each successful exit calls `close()` **before** notifying the page. That lets the browser end modality and restore focus while the dialog and opener are still connected. The page then removes the editor. Merely removing an open dialog would skip this deliberate close path.
+If you've seen older modal code, you may remember a keydown listener for Escape, a loop that sets `aria-hidden` on everything behind the modal, and code that catches Tab on the last button and jumps back to the first. `showModal()` does all three, so none of it appears here.
 
-The Escape handler cancels the browser's default close action only to route it through the same close-and-cancel operation as the visible Cancel button. It does not keep the user trapped. Cancellation never submits the draft. Deletion also closes first, but the page must choose a different destination because it removes the opener's row.
+## Contrast, target size, and zoom
 
-There is no global Escape listener, manual background `aria-hidden` toggle, or hand-written Tab trap. Those would introduce coordination this native primitive already handles. Test that page controls remain unreachable while the modal is open; browser chrome and operating-system controls are not part of the page's focus sequence.
+Accessibility covers more than screen readers. A keyboard user needs to see where focus is. Someone using larger text needs controls that still fit. Someone with limited hand precision needs targets big enough to hit.
 
-## State and feedback must be perceivable
+The example keeps the styling article's dark and light colors and checks these:
 
-A crossed-out title tells a sighted reader something changed. The checkbox's native checked state expresses completion independently of the color or line-through effect. The page below also displays “Completed” or “Active” as ordinary text.
+- Text, the borders that show where a control is, and focus outlines need enough contrast in **both** themes. A color named `muted` still has to pass a contrast check.
+- The checkbox and the "Completed" text show completion without relying on color or strike-through alone.
+- `focus-visible:outline-*` classes draw a visible outline around whatever has keyboard focus.
+- Wrapping, `min-w-0`, and `break-words` let long task titles wrap on narrow screens instead of pushing the layout sideways.
+- `min-h-11` makes buttons at least 2.75rem tall. Each checkbox sits inside its label, so the whole label is clickable, not just the small box.
+- The dialog has a maximum width and scrolls vertically when its content doesn't fit, so Save and Cancel stay reachable with large text.
 
-For a control that expands content, keep its `aria-expanded` value aligned with the actual open/closed state. That attribute reports state; it does not expand anything. The previous article's Details control demonstrates this contract.
+The Web Content Accessibility Guidelines (WCAG) 2.2 set a minimum target size of 24 × 24 CSS pixels, with some exceptions, and a stricter enhanced level of 44 × 44 CSS pixels. Those are two different criteria, and the minimum is a floor rather than a design goal, so aim for targets that are comfortable to use.
 
-### Associate help and errors with the field
+CSS pixels are layout units. Their physical size depends on the screen, so test on real devices if they're part of what you support.
 
-**Include the validation message element's ID in the field's `aria-describedby`, alongside any help-text IDs.** In the editor, `aria-describedby="draft-hint draft-error"` connects the field to both its instructions and its error message. These are space-separated IDs of elements in the same document, not the instruction or error strings themselves.
+Test with browser zoom and larger text settings, not only a narrower window. Look for clipped labels, buttons you can't reach, and sideways scrolling. The [CSS layout article](/dump/blog/css-layout-fundamentals/) explains the sizing behind those failures.
 
-This independent HTML snapshot shows that relationship after a failed submission:
+## Put the page together
 
-```html
-<label for="example-title">Task title (required)</label>
-<p id="example-title-hint">Enter a title for the task.</p>
-<input
-  id="example-title"
-  name="title"
-  type="text"
-  required
-  aria-invalid="true"
-  aria-describedby="example-title-hint example-title-error"
-/>
-<p id="example-title-error" aria-live="polite">Enter a task title, not just spaces.</p>
-```
+The page component, `TaskPage`, holds the accepted tasks, the filter, which task is being edited, and the status message. It renders the add form, the filter, the list, and the editor when one is open. It includes the three focus methods from earlier. Save it in `task-page.ts`, next to `task.ts` and `task-editor.ts`.
 
-The field's **name** comes from the label. Its **description** includes the help text and the validation message. `aria-invalid="true"` reports that validation failed; it does not explain what went wrong. Displaying the error nearby, giving it an ID, or marking the field invalid alone does not create this descriptive association. The field must reference the message's ID too.
-
-Keep the existing help-text ID when adding an error ID. The complete Angular editor keeps both referenced paragraphs in the DOM; the error paragraph starts empty and receives text after an invalid submission. If another implementation creates the paragraph conditionally, include its ID when it exists and remove that reference when the paragraph is removed.
-
-Association and notification are separate jobs. `aria-describedby` makes the message available as part of the field's description; it does not, by itself, guarantee an immediate announcement while someone is already focused there. The example's `aria-live="polite"` requests notification when the error text changes. Actual announcements still need screen-reader testing.
-
-After an invalid submission, the visible error says how to recover and focus stays at or moves to the title field. Typing clears the obsolete error and invalid flag. Do not mark an untouched field invalid before validation has failed.
-
-The form uses `novalidate` to disable automatic browser validation popups while this small example supplies its own visible feedback. `required` still expresses the field's requirement; the submit method rejects empty or whitespace-only titles. This is not a complete validation architecture. The forms article covers that separately.
-
-### Feedback need not move focus
-
-After a successful save, “Task title saved” appears in a **live region**: an element whose changes can be presented by assistive technology without navigating to it.
-
-`role="status"` supplies polite live-region semantics and an atomic update by default. **Polite** requests presentation without unnecessarily interrupting current speech. **Atomic** means the region's whole message provides context, rather than announcing only a changed number. The page makes `aria-atomic="true"` explicit.
-
-An urgent message that requires immediate attention may justify `role="alert"`, with assertive announcement semantics. Do not use that for every count change or success message. The title errors here also use polite updates; they are associated with the field and follow the person's submission rather than appearing as an unrelated alarm.
-
-Keep one useful status message rather than making the whole task list live. The page's remaining count is readable ordinary text; action messages include the count when relevant. This avoids two separate live regions announcing the same change.
-
-A live region is not a guaranteed speech queue. Timing, repeated identical text, screen-reader settings, and browser combinations affect announcements. Keeping a region present before changing its text is a useful baseline; verify what people actually hear. Do not add timers or repeated-message machinery without a demonstrated need.
-
-## Visual styling still carries responsibilities
-
-Accessibility is not only about screen readers. A keyboard user needs to find focus. A person using larger text needs controls that still fit. Someone with limited precision needs a usable target, not a tiny icon with a large-looking shadow.
-
-The example keeps the existing dark/light colors and adds these checks:
-
-- Text, borders needed to identify controls, and focus indicators need adequate contrast in **both** themes. A token named `muted` is not proof of contrast.
-- The checkbox and explicit status text communicate completion without relying on color alone.
-- `focus-visible:outline-*` classes make keyboard focus visible rather than suppressing the browser indicator.
-- Wrapping, `min-w-0`, and breakable task titles let the layout handle narrow widths and long content.
-- Button `min-h-11` gives a preferred minimum height of 2.75rem; checkbox labels provide a larger clickable area than the small check mark alone.
-- The dialog is width-constrained and can scroll vertically when content no longer fits. Save and Cancel must remain reachable at larger text sizes.
-
-The Web Content Accessibility Guidelines (WCAG) 2.2 target-size minimum is generally 24 × 24 CSS pixels, with defined exceptions; the enhanced criterion uses 44 × 44 CSS pixels. These are different criteria, not a rule that every interactive thing must be exactly 44 pixels. Prefer comfortably usable targets instead of treating the smallest permitted target as the design goal.
-
-CSS pixels are layout units, not fixed physical millimetres on every screen. Test real devices and input modes when they are part of the supported product.
-
-Use zoom and text enlargement, not only a smaller window. Check for clipped labels, unreachable buttons, and horizontal scrolling that makes the interaction difficult. The [CSS layout article](/dump/blog/css-layout-fundamentals/) explains the sizing mechanisms behind those failures.
-
-## Verify the complete task
-
-This complete page is the editor's consumer. Save it in `task-page.ts`, alongside `task.ts` and `task-editor.ts`. It uses an inline template and keeps task state in the page; the editor never owns the accepted collection.
+<details>
+<summary>The complete <code>task-page.ts</code></summary>
 
 ```ts
 import { Component, computed, signal } from "@angular/core";
@@ -608,7 +788,15 @@ export class TaskPage {
 }
 ```
 
-Bootstrap the page in `main.ts`:
+</details>
+
+What to notice in the parts you haven't seen yet:
+
+- The editor only exists while `editingTask()` returns a task. Setting `editingId` to `undefined` removes it, after the editor has already closed its dialog.
+- The list keeps `role="list"` because Tailwind removes list bullets, and Safari deliberately stops reporting an unstyled `<ul>` as a list in some cases. An explicit role keeps it a list.
+- `addTask` and `setFilter` write to the same `status` signal as the focus methods, so every action produces one message in the one status region.
+
+Start the page from `main.ts`:
 
 ```ts
 import { bootstrapApplication } from "@angular/platform-browser";
@@ -617,54 +805,42 @@ import { TaskPage } from "./task-page";
 bootstrapApplication(TaskPage);
 ```
 
-Use `<task-page></task-page>` in the host document, with the styling article's CSS entry, dark-default document attributes, and body classes. Angular templates can self-close the empty `<task-editor />` usage; the browser-parsed custom-element host still needs its closing tag. This demonstration keeps tasks in memory; reloading resets its records and messages.
+The host `index.html` needs a `<task-page></task-page>` element, plus the styling article's CSS entry, dark-default document attributes, and body classes. Inside an Angular template you can write `<task-editor />`, but in the HTML file the browser reads directly, a custom element needs its closing tag. Tasks live in memory, so reloading the page resets them.
 
-The page focuses the Edit button before creating the editor. That makes it the browser's restoration target even on platforms where clicking a button does not focus it. Tracking `task.id` preserves that same button when its title changes.
+## Walk the whole task with a keyboard
 
-Save and Cancel close the native dialog before the page clears edit selection. Deletion takes focus to the still-existing filter before Angular removes the row. Completing a task moves focus there only if the active filter will remove that row. Changing the filter from the select leaves focus on the select; updating a count does not steal it.
+Put the mouse away and go through every action:
 
-### Walk the workflow without a mouse
-
-1. Tab to the title field. Submit an empty or whitespace-only title. Check the visible error, invalid state, field association, and focus destination.
-2. Type a title and press Enter. Confirm the new task, success feedback, and continued focus in the Add field.
-3. Tab to a checkbox and press Space. Confirm its checked state, completion text, and remaining count.
-4. Activate a task's Edit button. Confirm the dialog name and initial title-field focus. Tab and Shift+Tab through it; no background page control should receive focus.
-5. Change the title and press Escape. Confirm the accepted title did not change, the dialog is gone, and focus returns to its opener. Reopen it: the draft should start from the accepted title.
-6. Save a valid title. Confirm the record changed and focus returns to the same row's Edit button.
-7. Open the editor and delete its task. Confirm focus lands on the filter rather than on the removed button. The background must become operable again.
-8. With the Active filter selected, complete an active task. Confirm its row disappears, feedback remains available, and focus moves to the filter. Also test reactivating a task under Completed.
+1. Tab to the title field. Submit an empty title, then one made of spaces. Check that the error appears, the field reports itself as invalid, the error is read as part of its description, and focus stays on the field.
+2. Type a title and press Enter. Check that the task appears, the status message says so, and focus stays in the title field.
+3. Tab to a checkbox and press Space. Check that it's checked, the row says "Completed", and the remaining count went down.
+4. Tab to a task's Edit button and press Enter. Check that the dialog is announced by name and focus is in its title field. Tab and Shift+Tab through it; nothing behind the dialog should get focus.
+5. Change the title and press Escape. Check that the title didn't change, the dialog is gone, and focus is back on the Edit button. Open it again: the draft should start from the saved title.
+6. Change the title and save it. Check that the title changed and focus is back on the same row's Edit button.
+7. Open the editor and delete its task. Check that focus is on the filter, not lost, and that the rest of the page works again.
+8. Select the Active filter and complete a task. Check that its row disappears, the status message reports it, and focus moves to the filter. Then do the opposite under Completed: uncheck a completed task.
 
 ### Inspect more than the screenshot
 
-Use the browser's accessibility inspection to check computed names, roles, states, and descriptions—not only source attributes. Confirm that labels reference existing IDs, the dialog is named and modal, and background controls are absent from the accessible interaction while it is open.
+Open your browser's accessibility inspector (in Chromium and Firefox, it's part of the developer tools) and check what the browser actually computed: each control's role, name, state, and description. Check that every ID in `aria-labelledby` and `aria-describedby` exists, that the open dialog is named and modal, and that the controls behind it are missing from the accessibility tree while it's open.
 
-Then try the supported screen-reader/browser combination. Check whether names give enough context, field help and errors are useful, status updates are announced at an appropriate time, and focus transitions remain understandable. Keyboard-only testing does not exercise a screen reader's reading/navigation mode or speech behavior.
+Automated checkers can find unnamed controls, references to missing IDs, and some contrast problems. They can't tell whether a message is helpful, whether focus lands somewhere sensible, or whether the whole task makes sense. A clean report is a good sign, not proof.
 
-Automated checks can find unnamed controls, some invalid relationships, and detectable contrast problems. They cannot decide whether a message is useful, an initial focus choice makes sense, or the complete workflow is understandable. A clean result is evidence, not an accessibility certificate.
-
-**Verification boundary:** The example is checked through strict Angular compilation, browser keyboard/focus behavior, accessible properties, and narrow/larger-text layouts. Screen-reader speech and real-device touch behavior require separate checks; no WCAG-compliance or legal-compliance claim follows from these examples.
-
-Component reuse should preserve this whole contract: labels, keyboard operation, state, feedback, focus, and presentation. Reusing the border and colors while losing the interaction is not equivalent reuse.
+A keyboard walkthrough and the accessibility inspector don't show what a screen reader actually says, so repeat the walkthrough with a screen reader and the browser your users have.
 
 ## Closing check
 
-1. Why does `role="button"` not make a clickable `<div>` equivalent to a button?
-2. How is keyboard focus different from task completion?
-3. What does `showModal()` provide that `aria-modal="true"` alone does not?
-4. Why close the dialog before destroying its Angular editor?
-5. Why does deleting the edited task use a different focus destination from Cancel?
-6. Why is the entire task list not a live region?
+1. Why doesn't `role="button"` turn a clickable `<div>` into a button?
+2. Why does the page focus the Edit button before it opens the editor?
+3. Why does deleting the edited task send focus to the filter, when Cancel sends it back to the Edit button?
 
 Check your reasoning:
 
-- A role describes meaning; it does not supply native focus or keyboard activation behavior.
-- Focus identifies the keyboard's current interaction destination. Completion is application data exposed through the checkbox's state.
-- `showModal()` supplies actual modal browser behavior, including an inert background and dialog focusing. ARIA alone reports semantics.
-- Closing explicitly ends modality and runs native restoration while the relevant elements are connected; the page can then remove the editor.
-- Cancel preserves the opener. Deletion removes it, so the person needs another sensible place to continue.
-- Useful action feedback does not require announcing every inserted or changed row. A small status region avoids that noise.
+- The role only changes what the accessibility tree reports. The `<div>` still can't be reached with Tab or pressed with Enter or Space until you write that behavior yourself.
+- The dialog returns focus to whatever had focus when it opened. Not every browser focuses a button on click, so focusing it first makes the Edit button the return destination everywhere.
+- Cancel leaves the Edit button in place, so focus can go back to it. Deleting removes the row and its Edit button, so the person needs another place to continue, and the filter is always there.
 
-The final question is practical: can someone complete the task, understand the result, and continue from a sensible position without using a mouse?
+That brings it back to the question from the start: can someone complete the task, understand the result, and continue from a sensible place without using a mouse?
 
 ## Sources and further reading
 
@@ -674,10 +850,13 @@ The final question is practical: can someone complete the task, understand the r
 - [WAI-ARIA APG: modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)
 - [HTML Standard: the dialog element](https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element)
 - [MDN: the dialog element](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog)
+- [MDN: the button element, including clicking and focus](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/button#clicking_and_focus)
 - [WAI-ARIA: status role](https://www.w3.org/TR/wai-aria-1.2/#status)
 - [WCAG: understanding status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html)
+- [WCAG: understanding label in name](https://www.w3.org/WAI/WCAG22/Understanding/label-in-name.html)
 - [WCAG: understanding focus visible](https://www.w3.org/WAI/WCAG22/Understanding/focus-visible.html)
 - [WCAG: understanding reflow](https://www.w3.org/WAI/WCAG22/Understanding/reflow.html)
 - [WCAG: understanding target size minimum](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)
 - [WCAG: associating validation errors and invalid state](https://www.w3.org/WAI/WCAG22/Techniques/aria/ARIA21)
+- [Angular: dependent writable state with linkedSignal](https://angular.dev/guide/signals/linked-signal)
 - [Angular: using DOM APIs and render callbacks](https://angular.dev/guide/components/dom-apis)

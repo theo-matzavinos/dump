@@ -1,7 +1,8 @@
 ---
 title: "From DOM changes to pixels: what the browser actually does"
-description: "Follow a task update through style, layout, paint, rasterization, and compositing, then use a real trace to investigate forced layout without changing the result."
+description: "Follow a task update through style, layout, paint, rasterization, and compositing, then use a real recording to find forced layout and fix it without changing the result."
 pubDate: "2026-10-07"
+updatedDate: "2026-10-15"
 tags:
   - browser
   - rendering
@@ -10,62 +11,70 @@ tags:
   - angular
 ---
 
-You expand a task's details, mark it complete, or open its editor. The JavaScript might change only one attribute. The browser still has to work out what that change means for the visible page.
+You expand a task's details, mark it complete, or open its editor. The JavaScript might change only one attribute. The browser still has to work out what that change means for the visible page, and that work is where many rendering performance problems come from.
 
-This article follows a small task list from changed DOM values to pixels. You need to recognize an HTML element, a CSS declaration such as `color: red;`, and a JavaScript function. The [DOM and events article](/dump/blog/html-dom-and-events/) introduces those pieces; [CSS layout fundamentals](/dump/blog/css-layout-fundamentals/) explains how boxes occupy space. We will explain the rendering work here rather than assume you already know it.
+This article follows a small task list from a changed DOM value to pixels on the screen. You'll need to recognize an HTML element, a CSS declaration such as `color: red;`, and a JavaScript function. The [DOM and events article](/dump/blog/html-dom-and-events/) introduces those pieces, and [CSS layout fundamentals](/dump/blog/css-layout-fundamentals/) explains how boxes take up space. The rendering work itself is explained here step by step.
+
+The runnable page needs only a browser. The recording steps use the Performance panel in a Chromium-based browser such as Chrome or Edge, and the Angular example uses Angular 22.2.1 with TypeScript 6.0.3.
 
 ## Contents
 
-1. [Three small changes, three mysteries](#three-small-changes-three-mysteries)
-2. [Updating the DOM is not displaying the screen](#updating-the-dom-is-not-displaying-the-screen)
+1. [Three changes to one task list](#three-changes-to-one-task-list)
+2. [The DOM changes first, pixels come later](#the-dom-changes-first-pixels-come-later)
 3. [From changed values to pixels](#from-changed-values-to-pixels)
 4. [Follow three changes to the same row](#follow-three-changes-to-the-same-row)
-5. [When asking for a size makes the browser work](#when-asking-for-a-size-makes-the-browser-work)
-6. [Frames are deadlines, not JavaScript allowances](#frames-are-deadlines-not-javascript-allowances)
-7. [Layers are reusable content, not free acceleration](#layers-are-reusable-content-not-free-acceleration)
-8. [Record one interaction before optimizing it](#record-one-interaction-before-optimizing-it)
-9. [Connect the browser work back to Angular](#connect-the-browser-work-back-to-angular)
+5. [Why moving with transform can cost less](#why-moving-with-transform-can-cost-less)
+6. [When reading a size makes the browser work](#when-reading-a-size-makes-the-browser-work)
+7. [Record one interaction before optimizing it](#record-one-interaction-before-optimizing-it)
+8. [Why a slow handler makes animation stutter](#why-a-slow-handler-makes-animation-stutter)
+9. [Layers and the compositor thread](#layers-and-the-compositor-thread)
+10. [Connect the browser work back to Angular](#connect-the-browser-work-back-to-angular)
+11. [What to do with this](#what-to-do-with-this)
 
-## Three small changes, three mysteries
+## Three changes to one task list
 
-Consider these actions in a task list:
+Here are three small things a task list does:
 
-- **Expand a row:** a hidden paragraph becomes visible. The row gets taller, so later rows move down.
-- **Measure it:** the handler asks for the row's height immediately after revealing the paragraph. Work appears inside that height read, even though the line only looks like a query.
-- **Move an editor:** the panel slides a short distance into its final position. Moving its already-drawn content can require less work than repeatedly changing its layout position.
+- **Expand a row:** a hidden paragraph becomes visible. The row gets taller, so every row below it moves down.
+- **Slide in an editor:** the editor panel moves a short distance into its final position as it appears.
+- **Measure a row:** right after revealing the paragraph, the code asks for the row's new height.
 
-These lead to three questions:
+Each one raises a question:
 
-1. Why can a small DOM change cause a slow visual update?
-2. Why can reading a size trigger work?
-3. Why might `transform` movement cost less than movement through `top` or `left`?
+1. Why can a small DOM change still cause a slow visual update?
+2. Why does moving the editor with `transform` usually cost less than moving it with `top` or `left`?
+3. Why can a line that only _reads_ a height make the browser do work?
 
-The number of assignments is not enough to answer them. We need to follow what becomes out of date, what the browser must recompute, and what it can reuse.
+Counting how many lines of JavaScript run doesn't answer any of them. You need to follow what the change makes out of date, what the browser has to recompute, and what it can reuse.
 
-## Updating the DOM is not displaying the screen
+## The DOM changes first, pixels come later
 
-A task title is stored in application data. Activating a button calls an **event handler**: a function that can change that data. Angular reads the data used by its template, compares the relevant results with their previous values, and writes changed results to DOM properties, attributes, or text.
+An **event handler** is a function the browser calls when something happens, such as a click. Suppose the handler for the expand button runs this line:
 
-A **binding** connects a template's text or element property to a data value. A **signal** is a value container that can notify Angular when its value changes. Those help arrange application updates. The browser still needs to turn the DOM values and CSS into a visible result.
+```js
+details.hidden = false;
+```
 
-These are different milestones:
+The DOM changes immediately: if the next line reads `details.hidden`, it gets `false`. But nothing new is on the screen yet. The browser finishes running your JavaScript first. Later, at its next chance to update the screen (usually lined up with the display's refresh), it works out what the changed DOM means visually and draws the result. If your handler made several changes, the browser can handle them all in that one update.
 
-1. The event handler changes application state.
-2. Angular performs the required binding and DOM work.
-3. The browser updates its description of the page and prepares rendered content.
-4. The result can be presented on a display.
+Frameworks such as Angular add one step at the front. Your code changes application data, and Angular then writes the matching values into the DOM. After that, the browser does exactly the same rendering work as it would for hand-written JavaScript.
 
-Finishing the handler, returning from `signal.set()`, or finishing Angular's DOM update does **not** prove that the user has seen new pixels. A binding check can also finish without changing the DOM at all.
+So there are separate milestones:
 
-The same distinction applies without Angular. `element.hidden = false` changes the DOM synchronously, but does not promise immediate presentation. A browser can collect several changes before updating their visible result.
+1. Your event handler changes data or the DOM.
+2. A framework, if you use one, updates the DOM to match the data.
+3. The browser works out styles, sizes, positions, and drawing for the changed page.
+4. The display shows the new pixels.
 
-Static HTML, server-produced HTML, client-created HTML, and hydrated HTML all still need browser rendering. They differ in how the document and behavior arrive, not in whether CSS and boxes need to become pixels. See [HTML delivery methods](/dump/blog/html-rendering-methods/) and [Angular change detection](/dump/blog/angular-change-detection/) for those separate subjects.
+Finishing step 1 or 2 means the browser _can_ start the rest of the work, not that the user sees the result.
+
+This applies however the HTML first arrived. Static files, server-rendered HTML, and HTML built by client-side JavaScript all end up as DOM and CSS that the browser has to turn into pixels. [HTML delivery methods](/dump/blog/html-rendering-methods/) and [Angular change detection](/dump/blog/angular-change-detection/) cover how the HTML and the framework updates arrive.
 
 ## From changed values to pixels
 
-Imagine revealing the details paragraph. Before it can appear, the browser needs answers to increasingly concrete questions: which CSS values apply, where the boxes fit, what to draw, and which pixels to combine.
+Take the details paragraph again. Before it can appear, the browser answers a series of increasingly concrete questions: which CSS values apply, where the boxes go, what to draw, and which pixels to combine.
 
-Here is a **simplified dependency diagram**, not a promise that every update runs every box:
+Here's a simplified diagram of that work. A given update doesn't always need every step:
 
 ```mermaid
 flowchart LR
@@ -79,124 +88,148 @@ flowchart LR
 
 ### Style: which values apply?
 
-The browser matches CSS rules to elements and resolves which declarations win, including inherited values. For example, the task title might now have the completed color, while the details paragraph no longer has `display: none` from being hidden.
+The browser matches CSS rules to elements and works out which declarations win, including values inherited from parent elements. For example, the task title might now get the "completed" color, and the details paragraph no longer gets `display: none` from the `hidden` attribute.
 
-This work is usually called **style calculation** or **style recalculation**. Some values still depend on later geometry calculations: a percentage width cannot become a final box width without knowing its reference size.
+This step is called **style calculation**, or **style recalculation**. Some values can't be finished yet: a `width: 50%` can't become a pixel width until the browser knows how wide the parent is, and that's decided in the next step.
 
 ### Layout: how big, and where?
 
-The browser calculates box sizes and positions from the applicable styles, content, and available space. Text wrapping affects height. A taller row changes where later rows belong.
+The browser calculates every box's size and position from the styles, the content, and the available space. Text wrapping affects height, and a taller row changes where the rows below it go.
 
-This is **layout**, also called **reflow** in some tools. It is about geometry, not about coloring pixels. An element, its children, and its neighbors can participate in the same calculation. One changed element is not necessarily one isolated box of work.
+This step is **layout**, which some tools call **reflow**. It's only about geometry, not colors. And because boxes affect each other, one changed element can mean recalculating its parent, its children, and its neighbors too.
 
 ### Paint: what should be drawn?
 
-The browser records drawing operations: draw this background, this border, and these letters, in the required order and with the required clipping. **Paint** produces instructions describing the appearance; it is not identical to putting the final pixels on a physical screen.
-
-A **display list** is a recorded list of such drawing operations. Browser tools may expose paint events and their affected areas, although their internal data structures differ.
+Next, the browser writes down drawing instructions in the order they need to happen. For one task row, that list might read: "rounded rectangle at (10, 20), 200 × 40, dark grey; text 'Task 1' at (16, 32), light grey." This step is **paint**, and the recorded list of instructions is a **display list**. Paint doesn't produce any pixels yet. It only describes what the pixels should look like.
 
 ### Rasterization: turn drawing instructions into pixels
 
-Drawing a glyph or a rounded border requires deciding the colors of actual pixels. **Rasterization** performs that conversion into pixel-backed content, often in smaller pieces called tiles. Images and text can require additional work along this path.
+**Rasterization** works through those drawing instructions and decides the color of every actual pixel. It's done in smaller pieces called **tiles**, and text and images can need extra work along the way.
 
-Previously rasterized content may be reusable. Newly exposed content or a changed raster scale can require more rasterization even when the underlying idea is “just move it.”
+The browser can keep rasterized pixels and reuse them. That reuse depends on the **raster scale**: the size the content was rasterized at. If something rasterized at normal size gets `transform: scale(2)`, its existing pixels are too coarse for the bigger size and would look blurry, so the browser may rasterize it again at the larger scale.
 
-### Compositing: combine rendered content and effects
+### Compositing: combine the rendered pieces
 
-The browser combines rendered pieces with their positions, clipping, transparency, and other supported effects to form the result that can be presented. This is **compositing**. It can reuse existing pixel content rather than redraw that content for every movement.
+Finally, the browser takes the rasterized pieces and combines them, applying their positions, clipping, transparency, and some other effects, to build the image the display shows. This is **compositing**. Because it works with pixels that already exist, it can move or fade a piece without painting or rasterizing it again.
 
-Real engines have additional stages and synchronization between them. Chromium's [RenderingNG architecture](https://developer.chrome.com/docs/chromium/renderingng-architecture) explicitly separates work such as pre-paint, layerization, commit, activation, and drawing. Our five responsibilities are a learning model, not an engine implementation specification.
+Real engines split this work into more steps than these five. Chromium's [RenderingNG architecture](https://developer.chrome.com/docs/chromium/renderingng-architecture) describes extra stages such as pre-paint, layerization, commit, and activation. The five steps here are a learning model that's accurate enough to reason about performance.
 
-Crucially, browsers retain results and track what became invalid. They can skip unnecessary stages and update affected content rather than redraw the entire page for every change.
+The important part is that browsers keep the results of each step and track what a change made out of date. So they can skip steps that aren't needed and redo only the affected part of the page.
 
 ## Follow three changes to the same row
 
-The property name is a clue, but the page and its current state determine the work.
+Which work a change needs depends on what actually becomes different on the page:
 
-| Change in this task list                       | What becomes different                 | Work to investigate                                                                             |
-| ---------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Reveal a details paragraph                     | Row height and later rows' positions   | Style, layout, and the resulting drawing work                                                   |
-| Change only the title's color                  | Appearance, not its text or dimensions | Style and repainting the changed appearance; normally no new layout for that color change alone |
-| Animate the editor's `transform` and `opacity` | Visual position and transparency       | Initial setup/drawing, then potentially reuse of rendered content during compositing            |
+| Change in this task list                       | What becomes different                 | Work to expect                                                       |
+| ---------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------- |
+| Reveal a details paragraph                     | Row height and later rows' positions   | Style, layout, and drawing the affected content again                |
+| Change only the title's color                  | Appearance, not its text or dimensions | Style and repainting the title; normally no layout for a color alone |
+| Animate the editor's `transform` and `opacity` | Drawn position and transparency        | Setup and drawing once, then possibly only compositing per step      |
 
-A font-size change is not equivalent to a color change: it can change text wrapping and neighboring geometry. Similarly, a class that sounds like a color utility might also contain a border-width declaration. Inspect what it actually changes.
+Be careful with names. A font-size change looks like a styling tweak, but bigger text can wrap differently and change the row's height. A class that sounds like a color might also set a border width. Utility-class frameworks such as Tailwind work the same way: a utility class is ordinary CSS, so a color utility and a height utility ask the browser for different work. Check what a change actually sets.
 
-### Resize the box, or transform its appearance?
+## Why moving with transform can cost less
 
-Start with two block rows, A followed by B. **Normal flow** is the layout arrangement in which these rows take up space and B follows the space occupied by A. The browser first decides A's size and position, then where B belongs.
+Here's the practical rule: to move, fade, or scale something on screen, animate `transform` and `opacity` instead of `top`, `left`, `width`, or `height`.
 
-Changing A's `width` or `height` changes its layout dimensions. Giving A more height pushes B down. Giving text more width can change where lines wrap and, when height is automatic, how tall the box becomes.
+Changing `top` or `height` changes geometry, so each step of the animation can need layout and paint again. A `transform` changes where the browser _draws_ a box that's already laid out, and `opacity` changes how transparent it is. So the browser can often keep the content it already painted and rasterized, and only composite it at a new position or transparency for each step.
 
-A transform changes the appearance of that already-laid-out box:
+The one caveat is "often". The browser decides case by case, and things such as scaling to a new raster scale or revealing new content can still bring work back. If an animation stutters, record it with the steps later in this article instead of assuming.
 
-- **`translateY(24px)` moves its drawn appearance 24 CSS pixels down.** A still reserves its original space in normal flow; B does not move down to accommodate the translation.
-- **`scale(2)` doubles its drawn width and height.** The text and borders scale with it, but A still reserves its original layout space. It is not equivalent to assigning twice the `width` and `height`.
-- **`scale(0.5)` halves its drawn width and height.** B does not move up to fill the space that now looks unused.
+The rest of this section explains what a transform changes on the page, which matters as soon as you use one.
 
-For a concrete comparison, let A start at **200 × 40 CSS px**, with B immediately below it and no margins or gaps. Keep height fixed except in the height-change row. Use `transform-origin: top left` so scaling grows or shrinks from A's top-left corner; with the usual centered origin, it would extend in different directions instead.
+### What a transform changes and what it leaves alone
 
-| Change to A                   | Space A reserves in normal flow | Drawn appearance of A            | Top of B, measured from A's original top |
-| ----------------------------- | ------------------------------- | -------------------------------- | ---------------------------------------- |
-| No change                     | 200 × 40 CSS px                 | 200 × 40 CSS px                  | 40 CSS px                                |
-| `height: 80px`                | 200 × 80 CSS px                 | 200 × 80 CSS px                  | 80 CSS px                                |
-| `width: 400px`                | 400 × 40 CSS px                 | 400 × 40 CSS px                  | 40 CSS px; height is fixed here          |
-| `transform: translateY(24px)` | 200 × 40 CSS px                 | Same size, drawn 24 CSS px lower | 40 CSS px                                |
-| `transform: scale(2)`         | 200 × 40 CSS px                 | 400 × 80 CSS px                  | 40 CSS px                                |
-| `transform: scale(0.5)`       | 200 × 40 CSS px                 | 100 × 20 CSS px                  | 40 CSS px                                |
+Start with two rows, A followed by B. In **normal flow**, the default arrangement, each block takes up space and B starts where A's space ends. The browser first decides A's size and position, then where B goes.
 
-This simplified vertical-coordinate illustration shows why growing the height and scaling are different. The numbers are CSS pixels, and the drawing is not to scale:
+Changing A's `height` changes its layout size, so B moves down. A transform only changes how A is drawn: A keeps its original space, so B stays where it was.
 
-```text
-Change height to 80:
-  A's layout space: 0 through 80
-  A's drawn extent: 0 through 80
-  B starts at:                80
+Here's a concrete comparison. A starts at 200 × 40 CSS pixels, with B right below it and no margins or gaps. A **CSS pixel** is the unit CSS uses for page layout; on high-density screens, one CSS pixel covers several physical pixels. The example uses `transform-origin: top left`, so scaling grows from A's top-left corner instead of from its center.
 
-Keep height 40 and scale(2):
-  A's layout space: 0 through 40
-  A's drawn extent: 0 through 80
-  B starts at:        40
+| Change to A                   | Space A takes in normal flow | How A is drawn                   | Top of B, measured from A's top |
+| ----------------------------- | ---------------------------- | -------------------------------- | ------------------------------- |
+| No change                     | 200 × 40 CSS px              | 200 × 40 CSS px                  | 40 CSS px                       |
+| `height: 80px`                | 200 × 80 CSS px              | 200 × 80 CSS px                  | 80 CSS px                       |
+| `width: 400px`                | 400 × 40 CSS px              | 400 × 40 CSS px                  | 40 CSS px; height is fixed here |
+| `transform: translateY(24px)` | 200 × 40 CSS px              | Same size, drawn 24 CSS px lower | 40 CSS px                       |
+| `transform: scale(2)`         | 200 × 40 CSS px              | 400 × 80 CSS px                  | 40 CSS px                       |
+| `transform: scale(0.5)`       | 200 × 40 CSS px              | 100 × 20 CSS px                  | 40 CSS px                       |
+
+What to notice:
+
+- **With `scale(2)`, A is drawn over B's space instead of pushing B down.** A transformed box can overlap its neighbors, and it can make a container overflow, so clipping or scrollbars may change.
+- **With `scale(0.5)`, B doesn't move up** to fill the space that now looks empty.
+- **Scaling isn't the same as giving text more room.** A wider box lets text wrap into fewer lines. Scaling enlarges the lines that were already laid out.
+
+### `top` and `left` move positioned boxes
+
+`top` and `left` only work on elements with a `position` other than the default `static`, and what they do depends on that mode. `position: relative; top: 24px` draws the box 24 pixels lower while keeping its original space, so B doesn't move. `position: absolute` takes the box out of normal flow entirely, so other boxes ignore its size. [CSS layout fundamentals](/dump/blog/css-layout-fundamentals/) covers these modes in its positioning section.
+
+So "the neighbors didn't move" doesn't tell you whether layout ran. Animating `top` or `left` still asks the browser to recalculate the box's position for every step, and a `transform` animation often doesn't.
+
+A common belief is that CSS animations are always cheap and JavaScript animations are always expensive. What matters is which property changes. A CSS animation of `height` still asks for layout on every step, and JavaScript that updates a `transform` doesn't.
+
+## When reading a size makes the browser work
+
+Suppose the browser has already laid out a collapsed row and knows its height. Now your handler reveals the details and immediately reads `row.offsetHeight`:
+
+1. The write makes the stored layout out of date.
+2. The read asks for the **current** height, not the height from the last time the screen updated.
+3. To return a correct answer, the browser has to run style and layout right now, before your JavaScript continues.
+
+This is **forced synchronous layout**: a read forces the browser to do layout work immediately instead of at its next screen update. Reading a size isn't expensive by itself. If the layout is already up to date, the browser just returns the stored value. The problem comes from writing, then reading, then writing again in a loop.
+
+`offsetHeight` returns a whole number of CSS pixels for the element's height, including padding and borders but not margins, and it ignores transforms. `getBoundingClientRect()` returns a rectangle measured from the **viewport**, the visible area of the page, includes the effect of transforms, and can contain fractions. They answer different questions, but either one can force layout.
+
+### Two ways to expand and measure every row
+
+The demo page has 24 task rows. Both of its buttons reveal every details paragraph and then need every row's **expanded** height. The only difference is the order of the reads and writes.
+
+The first version reads each height right after revealing that row's details:
+
+```js
+function expandInterleaved() {
+  const heights = [];
+
+  for (const row of rows) {
+    row.details.hidden = false;
+    heights.push(row.element.offsetHeight);
+  }
+
+  return heights;
+}
 ```
 
-In the scaled case, A's appearance can overlap B's space rather than push B down. Transforms can also enlarge the area that overflows a container, so clipping or scrollbars may matter. “Does not rearrange normal flow” does not mean “has no other effects.”
+What to notice: every `offsetHeight` read follows a write that made layout out of date, so the browser has to run layout 24 times, once per row. It's deliberately inefficient teaching code.
 
-Scaling is not text reflow. Increasing the layout width gives text more room to form lines; scaling enlarges the lines that were already laid out. Scaling text to fit a larger space is therefore not a substitute for choosing appropriate layout dimensions and font sizes.
+The second version does all the writes first, then all the reads:
 
-### Positioning is another input to the browser
+```js
+function expandBatched() {
+  for (const row of rows) {
+    row.details.hidden = false;
+  }
 
-`top` and `left` apply to positioned elements, with behavior determined by their positioning mode. For example, `position: relative; top: 24px` offsets A while retaining its original space in normal flow, so B stays where it was. An absolutely positioned box is already outside normal flow. Do not use “the neighbors stayed still” as proof that no layout work happened.
+  const heights = [];
 
-Animating `top` or `left` generally asks the browser to update positioning geometry. A suitable transform animation may instead change the visual placement of reusable content without repeatedly calculating layout or painting that content. In a simple case they can look alike while requesting different browser work; inspect the actual trace rather than treating either cost as guaranteed.
+  for (const row of rows) {
+    heights.push(row.element.offsetHeight);
+  }
 
-Showing our editor still introduces a box into the page, which requires initial layout. Its short entrance animation is a separate question: can the browser reuse the editor's rendered content while changing its visual offset and opacity? Scaling may also require content to be rasterized at a different scale; a transform is not a promise to reuse the same pixels indefinitely.
+  return heights;
+}
+```
 
-**CSS animation is not automatically cheap, and JavaScript animation is not inherently expensive.** Repeatedly animating height through CSS still requests geometry changes. JavaScript can update a transform without requesting new layout geometry. What changes, how often it changes, and which work can be reused matter more than the language used to start the animation.
+What to notice: the first read still forces layout, because the new heights don't exist yet. But that one layout covers all 24 changes, so the other 23 reads reuse it.
 
-## When asking for a size makes the browser work
+The page also wraps each button's work in **User Timing** marks. `performance.mark()` records a named timestamp, and `performance.measure()` records a named interval between two marks. They show up in the browser's Performance panel, so you can find the expansion in a recording. They show when the code ran, not when its pixels appeared.
 
-Suppose the browser already knows a collapsed row's height. Now your handler reveals its details and immediately reads `row.offsetHeight`:
+### Try the full page
 
-1. The write makes the stored geometry potentially out of date.
-2. The read asks for the **current** height, not the previously displayed height.
-3. To return a correct value, the browser may need to calculate pending styles and layout immediately, before the JavaScript continues.
+Save the three files below as `index.html`, `rendering.css`, and `rendering.js` in one folder, then open `index.html` in a Chromium-based browser. There's no build step. Besides the two expand buttons, the page has a completion checkbox and an editor for each task, used later in this article, and a theme switcher. The editor slides in with a short `transform` and `opacity` animation, which is turned off when the operating system asks for reduced motion.
 
-This is **forced synchronous layout**: the read makes the browser do required geometry work now. A size read is not inherently expensive. If the relevant layout is already current, the browser can use it. The problem is often the ordering and repetition of pending changes and reads.
-
-`offsetHeight` returns an integer border-box height in CSS pixels, including padding and borders, excluding margins and ignoring transforms. `getBoundingClientRect()` returns a rectangle relative to the **viewport**, the page's viewing area, including the effects of transforms, and can include fractional sizes. These APIs answer different questions, but either can require current geometry.
-
-A **CSS pixel** is a unit used for page layout. Display scaling and pixel density mean it need not correspond to one physical display pixel.
-
-### A runnable comparison that needs the new geometry
-
-Save the next three blocks as `index.html`, `rendering.css`, and `rendering.js` in one directory. Open `index.html` in Chromium; no framework or build is required.
-
-The list has 24 rows so the repeated pattern is easy to find in a recording. Each row's expanded height depends on its own content and the list width, not on whether another row has expanded. Both buttons must reveal every paragraph **and measure each expanded row**. Moving the reads before expansion would measure the wrong state.
-
-The interleaved version is **deliberately inefficient teaching code**, not the recommended implementation. The batched version groups compatible writes, then reads the resulting heights. It still allows a necessary layout.
-
-The script also records named timestamps with `performance.mark()` and a named interval between them with `performance.measure()`. These **User Timing** entries let us find the expansion in browser tools. They describe when code ran, not when its pixels were displayed.
-
-`index.html`:
+<details>
+<summary>The complete <code>index.html</code></summary>
 
 ```html
 <!doctype html>
@@ -255,7 +288,10 @@ The script also records named timestamps with `performance.mark()` and a named i
 </html>
 ```
 
-`rendering.css` uses the same dark/light colors as this site. The editor uses a small transform/opacity entrance, not a height animation. The reduced-motion rule removes that movement without removing the editor.
+</details>
+
+<details>
+<summary>The complete <code>rendering.css</code></summary>
 
 ```css
 :root {
@@ -426,7 +462,12 @@ button {
 }
 ```
 
-`rendering.js`:
+</details>
+
+<details>
+<summary>The complete <code>rendering.js</code></summary>
+
+`template.content.firstElementChild.cloneNode(true)` copies the row markup from the `<template>` element. A `<template>` holds HTML that the browser parses but doesn't display, so the script can stamp out 24 copies of the same row.
 
 ```js
 const list = document.querySelector("#tasks");
@@ -466,7 +507,7 @@ for (let index = 0; index < 24; index += 1) {
   });
 }
 
-// Deliberately inefficient: each read follows another invalidating write.
+// Deliberately inefficient: each height read follows a write that makes layout out of date.
 function expandInterleaved() {
   const heights = [];
 
@@ -478,7 +519,7 @@ function expandInterleaved() {
   return heights;
 }
 
-// Recommended for THIS geometry contract: all expanded row heights.
+// Batched: reveal every row first, then read every expanded height.
 function expandBatched() {
   for (const row of rows) {
     row.details.hidden = false;
@@ -546,129 +587,133 @@ document.querySelector("#theme").addEventListener("change", (event) => {
 });
 ```
 
-The sum reports row heights, not the total list height: the gaps between rows are intentionally excluded. The user timing marks surround the expansion and reads, not the later status-text write or presentation. They help locate the code in a trace; they are not an “everything is on screen” measurement.
+</details>
 
-### Why this batching preserves the result
+The status line reports the sum of the row heights. It leaves out the gaps between rows, so it isn't the height of the whole list. The User Timing marks surround only the expansion and the reads, not the status-text update that follows.
 
-In both versions, each height is read after that row's details become visible. In this layout, revealing another row can move the measured row but does not change its height. So the batched version can reveal all details first without changing the requested height values.
+### Why this batching keeps the same result
 
-This would need reconsideration if we measured intermediate positions, if rows shared equal-height sizing, or if one row's change altered the width available to another. “Batch writes and reads” is not permission to change which state you measure.
+An optimization has to measure the same thing as the code it replaces. In both versions, each height is read after that row's details are visible. In this layout, revealing another row can move a row down the page but doesn't change its height. So revealing everything first gives the same 24 heights.
 
-If you need **old** geometry, read it before the compatible writes. If you need **new** geometry, perform the writes first and accept the required layout, while avoiding unnecessary repeated flushes. A read/write/read/write loop that repeatedly forces layout is called **layout thrashing**.
+That reasoning depends on the layout. If you measured positions instead of heights, if rows shared an equal-height grid, or if one row's change could change another row's available width, reordering might change the answers. Batching is only safe when it doesn't change which state you measure.
 
-## Frames are deadlines, not JavaScript allowances
+The general rule:
 
-A display refreshing at 60 Hz—60 refreshes per second—has roughly 16.7 ms between refreshes. At 120 Hz, the interval is roughly 8.3 ms. Those intervals are **not guaranteed JavaScript budgets**.
+- If you need the **old** geometry, read it before making the changes.
+- If you need the **new** geometry, make all the changes first and accept the one layout that the first read forces.
 
-A **thread** is an execution lane. On the page's **main thread**, JavaScript shares that lane with event handling and much of the work needed to update styles, layout, and drawing instructions. A running JavaScript handler does not let that same thread perform unrelated work halfway through the handler.
-
-The browser can use other threads for parts of rendering. Nevertheless, a fresh result that needs main-thread work must wait while that thread is occupied. The available time also depends on when the handler starts: starting partway through a refresh interval does not create a new 16.7 ms allowance. Required browser work still needs time after the application's work.
-
-### One busy handler can delay several visual updates
-
-Imagine a 60 Hz display and a handler that starts at time zero and occupies the main thread for 55 ms of continuous execution, not time spent waiting for a request. Suppose an animation needs a new JavaScript-produced position at each opportunity. This is an **illustrative timeline**, not a measurement from the runnable example or a physical display:
-
-```text
-0 ms       Handler starts.
-16.7 ms    Still busy: no fresh position from JavaScript.
-33.3 ms    Still busy: no fresh position from JavaScript.
-50.0 ms    Still busy: no fresh position from JavaScript.
-55 ms      Handler ends; required follow-up work can proceed.
-66.7 ms    Next nominal opportunity, not a completion promise.
-```
-
-The display can keep presenting previously prepared content, but those fresh JavaScript-dependent positions were not produced in time. The old position can remain visible longer; when a time-based animation next updates, it may jump farther along its path because more time has elapsed. Repeated late or uneven updates make motion stutter. That visible unevenness is **jank**.
-
-Ending the handler removes one obstacle; it does not immediately finish framework updates, pending JavaScript, style, layout, or drawing work. Nor does it guarantee the next presentation opportunity will be met. The browser and operating system still need to schedule and complete the required work.
-
-A handler can also be shorter than 16.7 ms and still contribute to a missed opportunity: it might start late, or leave too little time for the remaining work. A quick handler is not proof of a quick visual response, and average frames per second can hide uneven progress.
-
-### A transform does not free the main thread
-
-An animation that uses JavaScript to calculate and write each new transform value still needs its callback to run on the main thread. While a long handler occupies that thread, the animation callback cannot run there. Making the later rendering work cheaper does not make that callback available sooner.
-
-Starting an animation with JavaScript is a different question. Our editor's click handler reveals the panel and starts its CSS entrance animation; it does not calculate a new transform for every animation update. The important distinction is who produces the successive values, not which language started the animation.
-
-By contrast, a suitable animation that the browser has already handed to its **compositor thread** can advance independently of the main thread, using prepared content. An already-running CSS transform or opacity animation is a candidate for this path and may continue while a JavaScript handler is busy. Not every animation qualifies, and the compositor and other rendering work have their own costs; this is not a promise that every animation or the whole page stays smooth.
-
-`requestAnimationFrame()` asks the browser to run a callback before a repaint at an appropriate rendering opportunity. The callback still runs on the page's main thread. It is useful for coordinating animation updates with rendering, and its timestamp supports time-based motion rather than “move five pixels per callback.” It is one-shot and commonly paused in background tabs.
-
-It is **not** an after-paint callback, screen-completion evidence, or a way to make expensive work cheap. Moving 55 ms of work into that callback still occupies the main thread for 55 ms. A write followed by a geometry read inside it can still force layout. Even two callbacks do not establish when a physical display showed particular pixels.
-
-For tasks, microtasks, and rendering opportunities, see [JavaScript engines and runtimes](/dump/blog/javascript-engines-and-runtimes/). Here, keep the narrower question: **what work must finish for this visual update, and which part is making it late?**
-
-## Layers are reusable content, not free acceleration
-
-Imagine keeping the editor's drawn content separately so the browser can move or fade it without drawing every letter again. That is the useful idea behind a **composited layer**: content the compositor can handle as a separately managed rendered piece.
-
-Do not equate three different structures:
-
-- A **DOM element** is a node in the document, such as a button or paragraph.
-- A **stacking context** is a CSS grouping that controls how overlapping content is ordered relative to other groups.
-- A **composited layer** is part of the engine's rendering organization for managing and combining content.
-
-There is no one-layer-per-element rule, and creating a stacking context does not promise a dedicated composited layer. Engines choose how content is grouped, and those choices can change with the page and animation.
-
-A suitable transform or opacity animation is a good candidate for compositor reuse. Initial rendering, changed content, clipping/effects, newly exposed areas, and raster scale can still introduce work. Confirm the actual path in browser tools instead of labeling the animation “GPU-only.”
-
-Extra layers also have costs: stored pixel content consumes memory; creating or updating that content needs raster work; the browser must manage and combine it. Large layers and higher pixel density can increase those costs. **GPU involvement does not mean “fast” by definition.**
-
-`will-change` is a hint that something is likely to change. It can encourage preparatory optimizations, but can also retain resources and affect stacking behavior. Do not add `will-change: transform` to every task. Start without it, find a specific problem, and only test a targeted hint if the evidence supports it. Our example does not need a blanket hint.
+A loop that alternates read, write, read, write and forces layout each time is called **layout thrashing**.
 
 ## Record one interaction before optimizing it
 
-Use the runnable page to investigate the expansion first, separately from completion coloring or the editor animation.
+Use the demo page to confirm that the interleaved version really forces layout once per row. Record one interaction at a time, so other work doesn't mix in.
 
-1. Reload to start with 24 collapsed rows, the editor closed, and no completed tasks. Keep the same browser version, viewport, zoom, theme, fonts, CPU settings, and content for both runs.
-2. Open Chromium's **Performance** panel and start a recording after the initial page has settled.
-3. Click **Expand: interleaved (inefficient)** once. Stop after the resulting update has been recorded, rather than recording unrelated scrolling and editing too.
-4. Locate `expand-interleaved` in the **Timings** track. In the renderer's **Main** track, inspect the click handler and the nested style/layout work. Names can vary by browser version; common entries include Recalculate Style and Layout.
-5. Select a Layout event and inspect its initiator or call stack. The important evidence is layout inside the handler around `offsetHeight`, not just a large overall duration. DevTools' **Forced reflow** insight can also identify relevant code.
-6. Repeat from a fresh reload with **Expand: batched**, using an equivalent recording window. Compare the actual expanded content and measured heights as well as the trace.
+1. Reload the page so it starts with 24 collapsed rows, the editor closed, and nothing marked done. Keep the same window size, zoom, and theme for both runs.
+2. Open DevTools, select the **Performance** panel, and click the record button.
+3. Click **Expand: interleaved (inefficient)** once, then stop the recording.
+4. Find `expand-interleaved` in the **Timings** track. Below it, in the **Main** track, you'll see the click handler with many small **Recalculate Style** and **Layout** entries nested inside it. Entry names can vary slightly between browser versions.
+5. Click one of the Layout entries and look at its stack trace in the details pane at the bottom. It points to the `offsetHeight` read in `expandInterleaved`. The **Insights** sidebar may also flag it as a forced reflow.
+6. Reload the page and repeat with **Expand: batched**. Check that the status line shows the same heights as before.
 
-A repeated Layout pattern inside the loop supports the diagnosis: each reveal makes geometry stale again before another synchronous height request. In the batched version, the first read can update the geometry for all the writes; subsequent reads can reuse it.
+Recorded in Chromium 152 with a 960 × 800 CSS-pixel viewport, the work inside the two expansion marks looked like this:
 
-### What was actually observed
+| Inside the expansion marks                             | Interleaved             | Batched            |
+| ------------------------------------------------------ | ----------------------- | ------------------ |
+| Style updates (`UpdateLayoutTree` in the raw trace)    | 24                      | 1                  |
+| Layout events                                          | 24                      | 1                  |
+| Measured expanded row heights                          | 24 values of 122 CSS px | The same 24 values |
+| Sum of row heights, excluding gaps                     | 2928 CSS px             | 2928 CSS px        |
 
-The draft's verification used Chromium 152.0.7977.82 through a private Playwright/CDP fixture, with a 960 × 800 CSS-pixel viewport, device scale factor 1, and the exact HTML/CSS/JavaScript above. Both recordings began from fresh, collapsed pages and used the real expansion buttons. The parser selected the renderer main thread containing the expansion marks and counted events wholly inside those marks, also checking that the marked work belonged to the click handler.
+Your heights and timings will differ with your fonts, window size, and machine, but the pattern to look for is the same: one layout per row for the interleaved version, one layout in total for the batched one. Each recording also shows one more Layout after the marks. That's the browser laying out the updated status text, and it isn't part of the comparison.
 
-| Observed inside the expansion marks                       | Interleaved             | Batched            |
-| --------------------------------------------------------- | ----------------------- | ------------------ |
-| Style-update events (`UpdateLayoutTree` in the raw trace) | 24                      | 1                  |
-| Layout events                                             | 24                      | 1                  |
-| Measured expanded row heights                             | 24 values of 122 CSS px | The same 24 values |
-| Sum of row heights, excluding gaps                        | 2928 CSS px             | 2928 CSS px        |
+Fix the cause the recording shows, then record the same interaction again. Be careful that a faster version still does the same job: a test gets faster if you remove the details text or measure a different state, but the product doesn't get any better.
 
-The Layout stacks pointed to the `offsetHeight` read in `expandInterleaved` or `expandBatched`, respectively. Each complete recording also contained one later Layout event outside the expansion marks, following the status-text update. Those later events were not counted as geometry reads inside the expansion. The separate browser checks compared every row's final size and position, not just the sum.
+## Why a slow handler makes animation stutter
 
-These counts describe those recordings, not a required event count in every engine. The recordings and parser support a repeated forced-layout pattern and fewer synchronous flushes after batching. They do **not** establish a universal speedup, compositor-only animation, or the instant pixels reached a physical screen.
+A display refreshing at 60 Hz, 60 times per second, shows a new image roughly every 16.7 ms. At 120 Hz, it's roughly every 8.3 ms. If the browser wants a new image ready for the next refresh, everything needed to produce it has to fit in that interval. That includes your JavaScript and the browser's own style, layout, and paint work.
 
-The fixture ran headless with software rendering. No physical display refresh rate or hardware-GPU behavior was measured. Trace durations depend on the machine, instrumentation, and scheduling; the architectural expectation and the observed events are separate evidence. The bounded expansion marks also exclude later status painting, so their duration is not full interaction latency.
+A **thread** is a sequence of work that runs one step at a time. Each page has a **main thread**, which runs your JavaScript, handles events, and does most of the style, layout, and paint work. While a JavaScript function is running, that thread can't do anything else, including rendering.
 
-### Investigate drawing only when it is the suspected cause
+The browser does use other threads for some rendering work. But any update that needs the main thread has to wait until your JavaScript finishes.
 
-For the completion checkbox, enable **Paint flashing** in DevTools' Rendering panel and toggle one task. This highlights repaint regions; it does not measure their cost or prove final screen presentation. There should be no need to assume that a color-only update redraws every row.
+### One busy handler can delay several updates
 
-For the editor, record opening it separately. Inspect initial style/layout/paint work, then its animation. Use the **Layers** panel, compositing reasons, and paint information if those help explain the behavior. A screenshot, an absence of obvious layout events, or the word `transform` alone is not proof of a compositor-only path.
+Imagine a 60 Hz display and a handler that starts at time zero and keeps the main thread busy for 55 ms of computation. An animation on the page needs a new position from JavaScript at every refresh. This timeline is an illustration, not a measurement:
 
-Optimize the demonstrated cause, then repeat equivalent work. Removing the details text, changing the measured state, or replacing the editor with a visually different box can produce a faster test without improving the same product behavior.
+```text
+0 ms       Handler starts.
+16.7 ms    Still busy: no new position from JavaScript.
+33.3 ms    Still busy: no new position from JavaScript.
+50.0 ms    Still busy: no new position from JavaScript.
+55 ms      Handler ends; the remaining rendering work can start.
+66.7 ms    Next refresh the update can aim for.
+```
+
+The display keeps showing the last image during those refreshes, so the animation freezes in place. When it updates again, a time-based animation jumps ahead to catch up with the time that passed. Uneven, late updates like these make motion stutter, and that visible stutter is called **jank**.
+
+A handler shorter than 16.7 ms can still cause a missed refresh if it starts late or leaves too little time for the rest of the work. So a fast handler alone doesn't prove the screen updated quickly, and an average frames-per-second number can hide a few long gaps.
+
+For how tasks, microtasks, and rendering take turns on the main thread, see [JavaScript engines and runtimes](/dump/blog/javascript-engines-and-runtimes/).
+
+## Layers and the compositor thread
+
+Imagine the browser keeps the editor's rasterized pixels separately from the rest of the page. Then it can move or fade the editor by compositing those pixels in a new place, without painting every letter again. That separately kept piece is a **composited layer**.
+
+The browser composites on a separate **compositor thread**. A CSS `transform` or `opacity` animation that's already running can be handed to that thread, and then it keeps moving even while a long JavaScript handler blocks the main thread. That's the second reason `transform` and `opacity` are good animation choices. Not every animation qualifies, though, so check the recording if a running animation still stutters.
+
+### JavaScript-driven animation still needs the main thread
+
+An animation that uses JavaScript to calculate each new `transform` value needs that JavaScript to run on the main thread for every step. So a long handler still blocks it, even though the property is a cheap one to render. The demo's editor avoids this: its click handler only reveals the panel, and a CSS animation produces every step after that.
+
+When you do drive an animation from JavaScript, use `requestAnimationFrame()`. It runs your callback just before the browser's next render, which makes it the right place to set the next animation value. Use the timestamp it passes to your callback to work out how far the animation should have moved, rather than moving a fixed number of pixels per call. The callback runs on the same main thread, though, so 55 ms of work inside it still blocks for 55 ms, and a write followed by a size read inside it still forces layout.
+
+### Elements, stacking contexts, and layers are different things
+
+Three structures are easy to confuse:
+
+- A **DOM element** is a node in the document, such as a button or a paragraph.
+- A **stacking context** is a group of elements that CSS stacks together when content overlaps. Properties such as `transform`, `opacity` below 1, and a positioned element with a `z-index` create one. `z-index` only orders elements within the same stacking context. That's why `z-index: 9999` sometimes doesn't bring a dropdown to the front: the dropdown is trapped inside a parent's stacking context, which is itself stacked below something else.
+- A **composited layer** is the browser's own choice of how to split rendered content into pieces it can composite separately.
+
+There isn't one layer per element, and creating a stacking context doesn't guarantee its own layer. The browser decides how to group content, and those decisions can change as the page and its animations change.
+
+### Layers cost memory and work too
+
+Each layer's pixels take up memory, rasterizing them takes work, and the compositor has to combine them all. Large layers and high-density screens make each of those more expensive. Using the GPU for compositing doesn't make extra layers free.
+
+`will-change: transform` tells the browser an element is likely to change, which can make it prepare a layer in advance. It also keeps those resources reserved and creates a stacking context. So don't add it to every task row. Start without it, and only try it on a specific element when a recording shows a problem it could fix. The demo page doesn't need it.
+
+### Check drawing and layers in DevTools
+
+When you suspect drawing rather than layout, check it directly:
+
+- **Paint flashing:** open the DevTools command menu (Ctrl+Shift+P, or Cmd+Shift+P on macOS), run **Show Rendering**, and turn on **Paint flashing**. Toggle one task's checkbox in the demo page. Only the repainted area flashes green, so you can see that a color change doesn't repaint every row. It shows where paint happened, not how long it took.
+- **The editor's layers:** record opening the editor in the Performance panel. You'll see style, layout, and paint work when it appears, then the animation steps. The **Layers** panel (in the DevTools "More tools" menu) shows which layers exist and why each one was created.
+
+The word `transform` in your CSS, or a recording without obvious Layout entries, isn't proof that an animation runs entirely on the compositor. The Performance panel and Layers panel are where you confirm it.
 
 ## Connect the browser work back to Angular
 
-Two different costs can appear in an Angular trace:
+In an Angular app, a performance recording can show two kinds of cost:
 
-- **Application work:** scheduling, evaluating bindings, checking views, and changing DOM values.
-- **Browser work:** responding to those DOM/CSS values with style, geometry, and drawing work.
+- **Angular's work:** scheduling updates, evaluating template bindings, checking components, and changing DOM values.
+- **The browser's work:** responding to the changed DOM and CSS with style, layout, and drawing.
 
-Avoid putting repeated geometry queries in a template expression. A method called by a binding can run again during checks, and a geometry read can force pending work. Track stable row identities with `@for (...; track task.id)` so Angular can relate data to existing DOM nodes instead of needlessly replacing them. But fewer checks or fewer replacements do not make a genuinely larger box cheap to lay out or a complex appearance cheap to draw.
+Both matter, and they're fixed differently.
 
-### Measure after Angular has applied the bindings
+Don't read sizes inside template expressions. A **binding** connects a value in the template, such as `{{ title }}` or `[hidden]="..."`, to the DOM, and Angular re-evaluates bindings each time it checks the component. A method that reads `offsetHeight` from a binding can force layout on every check.
 
-Here is a smaller Angular version of the expansion consumer. A **signal** stores state and tells Angular when a template that reads it needs updating. A **view query** gives the code references to the row elements created by that template.
+Use `@for (...; track task.id)` so Angular can match each task to its existing DOM element instead of recreating rows. That reduces Angular's work and the DOM changes. It doesn't make a genuinely taller row cheaper to lay out.
 
-The handler changes `expanded`, then registers a one-time read after Angular's next render. Here, “render” means Angular has applied its DOM work; it does not mean the browser has finished painting. The `read` phase groups the geometry reads rather than scattering them through template evaluation. It can still require layout to obtain the new sizes.
+### Measure after Angular has updated the DOM
 
-The example was compiled and run against **Angular 22.2.1 and TypeScript 6.0.3**. Save this as `task-rows.ts` in an Angular application and load the earlier `rendering.css` as a global stylesheet. The small inline template stays beside its behavior.
+Here's the batched expansion as an Angular component. It uses three Angular pieces:
+
+- A **signal** holds a value and tells Angular when it changes, so Angular can update the parts of the template that read it. `signal(false)` creates one, `expanded()` reads it, and `expanded.set(true)` changes it.
+- `viewChildren("row")` returns a signal containing every element in the template marked `#row`. Each one is wrapped in an `ElementRef`, and its `nativeElement` property is the actual DOM element.
+- `afterNextRender` runs a callback once, after Angular has next updated the DOM. Its `read` phase is meant for reading sizes, so Angular groups those reads together instead of mixing them with DOM writes.
+
+Save this as `task-rows.ts` in an Angular application, and add the earlier `rendering.css` as a global stylesheet:
 
 ```ts
 import {
@@ -732,7 +777,16 @@ export class TaskRows {
 }
 ```
 
-`main.ts`:
+What to notice:
+
+- `expandAndMeasure()` changes the `expanded` signal and then asks for a measurement after the next render. Here "render" means Angular has written the new DOM values. The browser hasn't necessarily painted anything yet, and the first `offsetHeight` read still forces one layout, just like the batched JavaScript version.
+- The result goes into another signal, `measurement`, which the template displays.
+
+`afterNextRender` needs an **injection context**. That's the window in which Angular can supply a component's dependencies: while it's creating the component, which covers the constructor and field initializers, and a few other places such as provider factory functions. A click handler runs later, outside that window. So the component stores its `Injector` in a field initializer and passes it to `afterNextRender` explicitly. The [dependency injection article](/dump/blog/angular-dependency-injection/) explains injectors in detail.
+
+Render callbacks such as `afterNextRender` don't run during server-side rendering or prerendering, so this measurement only happens in the browser.
+
+To start the app, `main.ts` bootstraps the component:
 
 ```ts
 import { bootstrapApplication } from "@angular/platform-browser";
@@ -743,47 +797,38 @@ bootstrapApplication(TaskRows).catch((error: unknown) => {
 });
 ```
 
-The host in the application's HTML is `<task-rows></task-rows>`. Native HTML custom-element hosts need their closing tags. An empty Angular usage inside an Angular template may instead be written as `<task-rows />`.
+The application's `index.html` contains `<task-rows></task-rows>` where the component should appear.
 
-`afterNextRender` needs an injection context or an explicit injector. An event method is not automatically such a context, so the code captures `Injector` during component construction and passes it when registering the callback. Angular manages the callback's lifetime through that injector. Render callbacks do not run during server-side rendering or build-time prerendering; this measurement is browser-only.
+If a real feature needs to react whenever an element's size changes, rather than once after a click, look at `ResizeObserver` instead of reading sizes during every Angular check.
 
-The measurement updates a signal for display rather than directly inserting status HTML. The row size in this example is independent of that status text. If a real feature needs ongoing size observations rather than a measurement following an explicit action, investigate `ResizeObserver`; do not turn every Angular check into a size poll.
+## What to do with this
 
-### Tailwind still produces ordinary CSS
+Back to the three questions from the start:
 
-A Tailwind utility changes the browser's CSS inputs just like another class. A color utility and a height utility still request different kinds of work; using Tailwind does not bypass layout or paint.
+1. **A small DOM change can be slow** because the browser may have to redo style, layout, paint, rasterization, and compositing for everything the change affects, and that can be much more than the one element you touched.
+2. **`transform` usually costs less than `top` or `left`** because it changes where already-painted content is drawn, so the browser can often skip layout and paint and only composite. A running CSS `transform` or `opacity` animation can even continue on the compositor thread while the main thread is busy.
+3. **Reading a height can make the browser work** because the browser has to give you the current answer, so it runs any pending style and layout right away.
 
-For example, this optional title span belongs in a template that defines `done` as a boolean signal. The complete class names are literal so Tailwind can discover them:
+In practice, that comes down to three habits:
 
-```html
-<span [class.text-orange-300]="done()" [class.text-stone-100]="!done()"> Task title </span>
-```
-
-Those particular colors are a **dark-background-only illustration**, not a replacement for the theme-aware colors in the runnable page. The binding was also compiled as an Angular template and the utilities generated with Tailwind **4.3.3**. Avoid constructing strings such as `"text-" + color + "-300"`: Tailwind scans source text, not the possible runtime results of concatenation.
+- Don't read sizes right after writing to the DOM inside a loop. Make all the writes, then do all the reads.
+- Animate `transform` and `opacity`, not `top`, `left`, `width`, or `height`.
+- Record the interaction in the Performance panel before optimizing, and record it again afterwards to check that the fix worked and the result didn't change.
 
 ## Check your understanding
 
-1. **A handler finishes quickly. Does that prove the new UI was displayed quickly?** No. Angular/DOM work and the remaining browser presentation work are different milestones.
-2. **Which stage calculates the expanded row's height?** Layout. Paint describes drawing, rasterization turns drawing instructions into pixels, and compositing combines rendered content and effects.
-3. **Why can a height read do work?** Pending changes may have invalidated geometry. The browser must return a current answer, potentially calculating style and layout synchronously.
-4. **Should the batched example read heights before expanding?** No. Its consumer needs expanded heights. Reading earlier changes the result rather than optimizing the same operation.
-5. **Does a translated row push the following rows down?** Not merely because of the translation. Its layout space stays where it was; changing its occupied height has different semantics.
-6. **Does `transform` guarantee no paint or GPU-only execution?** No. It is a candidate for reusing rendered content, subject to actual content, effects, engine decisions, and initial rendering work.
-7. **Are 16.7 ms at 60 Hz reserved for JavaScript?** No. That is a nominal refresh interval, not a guaranteed share for one part of the application/browser work.
-8. **Does Angular's read-phase callback prove pixels reached the display?** No. It runs after Angular's DOM rendering and can still require browser layout.
-9. **Does `scale(2)` reserve twice as much height in normal flow?** No. It doubles the drawn dimensions, not the space reserved in normal flow. Changing the layout height has different consequences.
-10. **Why can a JavaScript-driven transform animation stutter during a long handler?** Its callback needs the occupied main thread to produce the next value. A suitable already-running compositor-driven animation may continue independently; the cheaper property alone does not move arbitrary JavaScript off the main thread.
+1. **Which step calculates the expanded row's new height?** Layout. Paint describes what to draw, rasterization turns that into pixels, and compositing combines the pieces.
+2. **Why does the interleaved loop run layout 24 times and the batched loop only once?** In the interleaved loop, every height read comes right after a write that made layout out of date. In the batched loop, the first read runs one layout for all the changes, and the remaining reads reuse it.
+3. **Could the batched version read all the heights before revealing the details?** No. It needs the expanded heights, so reading earlier would measure the wrong state instead of making the same measurement faster.
+4. **Why can a JavaScript-driven `transform` animation still stutter during a long handler?** The JavaScript that calculates each step needs the main thread, which the handler is still using. A cheap property doesn't move that JavaScript off the main thread.
 
-## References and verification baseline
+## References
 
-Official documentation was fetched and checked for this draft on **2026-10-07**, rather than inferred from earlier articles. The private verification artifacts include the final-fence extraction, strict Angular AOT compilation/linking, browser assertions, and raw Chromium traces with their parser. The results above describe that fixture, not all browsers or devices.
-
-- [Chromium RenderingNG architecture](https://developer.chrome.com/docs/chromium/renderingng-architecture): concrete pipeline responsibilities, retained artifacts, and skipped stages.
-- [web.dev: Avoid large, complex layouts and layout thrashing](https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing): forced synchronous layout and repeated read/write patterns. Its read-before-write advice applies when old geometry meets the consumer's need; our comparison explicitly needs new geometry.
-- [CSSOM View specification](https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetheight), [MDN: `offsetHeight`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/offsetHeight), and [MDN: `getBoundingClientRect()`](https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect): integer untransformed heights versus viewport-relative, transformed rectangles.
-- [CSS Transforms specification](https://drafts.csswg.org/css-transforms-1/#transform-rendering) and [MDN: stacking contexts](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_positioned_layout/Stacking_context): transformed appearance versus layout flow, and CSS overlap ordering.
-- [WHATWG HTML: update the rendering](https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering) and [MDN: `requestAnimationFrame()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame): rendering opportunities and callback timing, not physical-screen completion.
-- [web.dev: high-performance animations](https://web.dev/articles/animations-guide), [MDN: `will-change`](https://developer.mozilla.org/en-US/docs/Web/CSS/will-change), and [MDN: reduced motion](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion): animation candidates, resource tradeoffs, and honoring reduced motion.
+- [Chromium RenderingNG architecture](https://developer.chrome.com/docs/chromium/renderingng-architecture): the stages of Chromium's rendering pipeline and how it skips unneeded work.
+- [web.dev: Avoid large, complex layouts and layout thrashing](https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing): forced synchronous layout and read-write loops.
+- [CSSOM View specification](https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetheight), [MDN: `offsetHeight`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/offsetHeight), and [MDN: `getBoundingClientRect()`](https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect): what each size API returns.
+- [CSS Transforms specification](https://drafts.csswg.org/css-transforms-1/#transform-rendering) and [MDN: stacking contexts](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_positioned_layout/Stacking_context): how transforms affect drawing but not layout, and how stacking contexts order overlapping content.
+- [WHATWG HTML: update the rendering](https://html.spec.whatwg.org/multipage/webappapis.html#update-the-rendering) and [MDN: `requestAnimationFrame()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame): when the browser renders and when animation callbacks run.
+- [web.dev: high-performance animations](https://web.dev/articles/animations-guide), [MDN: `will-change`](https://developer.mozilla.org/en-US/docs/Web/CSS/will-change), and [MDN: reduced motion](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion): choosing animation properties, the costs of `will-change`, and respecting reduced motion.
 - [Chrome DevTools Performance reference](https://developer.chrome.com/docs/devtools/performance/reference), [Rendering tools](https://developer.chrome.com/docs/devtools/rendering/performance), and [Layers panel](https://developer.chrome.com/docs/devtools/layers): recording, paint flashing, and layer inspection.
-- [Angular DOM APIs](https://angular.dev/guide/components/dom-apis), [`afterNextRender`](https://angular.dev/api/core/afterNextRender), [signals](https://angular.dev/guide/signals), and [template control flow](https://angular.dev/guide/templates/control-flow): render callbacks, their phases, reactive state, and tracked row identity. The explicit `injector` option was also checked in the installed `@angular/core` 22.2.1 declarations and implementation.
-- [Tailwind: detecting classes in source files](https://tailwindcss.com/docs/detecting-classes-in-source-files): why complete utility class names must be findable in source.
+- [Angular DOM APIs](https://angular.dev/guide/components/dom-apis), [`afterNextRender`](https://angular.dev/api/core/afterNextRender), [signals](https://angular.dev/guide/signals), and [template control flow](https://angular.dev/guide/templates/control-flow): render callbacks and their phases, signals, and tracked rows.

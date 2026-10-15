@@ -13,7 +13,7 @@ scratch=$(mktemp -d /tmp/dump-article-checks-XXXXXX)
 python scripts/article_checks.py extract src/content/blog/css-layout-fundamentals.md \
   --language html --contains '<title>Task layout</title>' > "$scratch/index.html"
 python scripts/article_checks.py extract src/content/blog/css-layout-fundamentals.md \
-  --language css --contains '@media (min-width: 48rem)' > "$scratch/layout.css"
+  --language css --contains '/* Task form and rows */' > "$scratch/layout.css"
 cp scripts/article-check-report.mjs "$scratch/"
 ```
 

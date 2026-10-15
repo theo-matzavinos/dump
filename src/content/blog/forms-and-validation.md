@@ -1,82 +1,104 @@
 ---
-title: "A form is more than its values"
-description: "Separate accepted data from an edit draft, distinguish validation from interaction and submission, and build a task editor with useful errors and a deliberate save workflow."
+title: "Forms and validation: drafts, errors, and saving"
+description: "Build a task editor that keeps an edit draft apart from saved data, shows errors at the right moment, and handles a save that can fail, starting from a plain HTML form and ending with Zod and Angular Signal Forms."
 pubDate: "2026-10-06"
+updatedDate: "2026-10-15"
 tags:
   - angular
   - forms
   - frontend
 ---
 
-An empty title can be invalid before anyone has visited its field. A title can pass every client-side rule and still fail to save. Someone can change a title, put the original text back, and leave a field marked dirty.
+Someone opens the task editor to fix a typo in a title. While they're still typing, no red error should appear under the field. If they clear the title and press Tab, an error should show up and tell them what to write. If the title is fine but the network drops in the middle of saving, the editor should keep their text, say the save failed, and let them try again without retyping anything. And if they click Discard, the title should go back to what was saved, even though they've been typing for a while.
 
-These are not contradictions. The text, the checks applied to it, the person's interaction history, and the result of saving answer different questions.
+Each of those moments depends on a different piece of information: the text being edited, whether that text passes the rules, how the person has interacted with the field so far, and what happened on the last save. Forms get confusing when those pieces are mixed up, for example when "the title is invalid" is treated as "show the error now", or "the request finished" as "the task was saved".
 
-This article extends the task editor from [Building components with clear ownership](/dump/blog/angular-component-composition/). It keeps one accepted task and one permanent inline editor, adds an optional description, and gives saving a visible asynchronous result. There is no list, dialog, backend, or persistence layer. Reloading starts the demonstration again.
+This article builds that editor step by step. It starts with what a plain HTML form does on its own, then adds an edit draft, field state, validation rules, and a save that can fail, and finishes by wiring everything together with Angular's Signal Forms.
 
-The complete example uses Angular 22.2.1 Signal Forms, Zod 4.6.5, and the [styling article's Tailwind 4 setup and dark/light palette](/dump/blog/frontend-evolution-styling/#define-the-shared-palette-once). The [accessibility article](/dump/blog/accessibility-in-practice/) explains names, descriptions, live feedback, and keyboard focus in more depth.
+You'll need basic HTML and DOM events (the [DOM article](/dump/blog/html-dom-and-events/) covers the default actions this article relies on), promises with `async` and `await`, and the task editor from [Splitting a task page into Angular components](/dump/blog/angular-component-composition/), which this article extends. That article explains signals, `input`, `output`, and the `linkedSignal` draft used here.
+
+The code uses Angular 22.2.1 with Signal Forms, Zod 4.6.5, and the [styling article's Tailwind setup and palette](/dump/blog/frontend-evolution-styling/#define-the-shared-palette-once). The code slices leave out the Tailwind classes; the full files include them, and you can ignore the `class="…"` strings there. To keep things focused, there's one task, no real server (a short simulated save stands in for it), and no handling for two saves racing each other. Reloading the page starts over.
 
 ## Contents
 
-1. [Resolve three apparent contradictions](#resolve-three-apparent-contradictions)
-2. [Separate controls, the draft, and accepted data](#separate-controls-the-draft-and-accepted-data)
-3. [Track independent questions independently](#track-independent-questions-independently)
-4. [Separate validation rules from message visibility](#separate-validation-rules-from-message-visibility)
-5. [Describe the task rules once](#describe-the-task-rules-once)
-6. [Treat client validation as guidance, not acceptance](#treat-client-validation-as-guidance-not-acceptance)
-7. [Make submission a complete workflow](#make-submission-a-complete-workflow)
-8. [Connect the workflow to Signal Forms](#connect-the-workflow-to-signal-forms)
-9. [Make correction accessible](#make-correction-accessible)
+1. [What a plain HTML form does](#what-a-plain-html-form-does)
+2. [The draft and the accepted task](#the-draft-and-the-accepted-task)
+3. [What a form tracks for each field](#what-a-form-tracks-for-each-field)
+4. [Describing the rules with a schema](#describing-the-rules-with-a-schema)
+5. [Checking on the client and on the server](#checking-on-the-client-and-on-the-server)
+6. [The save workflow](#the-save-workflow)
+7. [Building the editor with Signal Forms](#building-the-editor-with-signal-forms)
+8. [Focus after saving and discarding](#focus-after-saving-and-discarding)
+9. [Trying the editor](#trying-the-editor)
+10. [Going further](#going-further)
 
-## Resolve three apparent contradictions
+## What a plain HTML form does
 
-### Invalid does not mean already visited
+Here's the smallest form that asks for a task title:
 
-An empty title fails a rule that requires meaningful text. That fact can be known immediately. It does not mean someone has focused the input, finished typing, or attempted to save.
-
-Displaying an error as soon as the editor appears would treat an unfinished starting point as a failed interaction. Instead, the form can know the rule failed while waiting until the person leaves the field or submits before showing its message.
-
-### Passing client rules does not mean saved
-
-The browser can check that a title contains text. It cannot guarantee that a later request will reach a server, that the server will accept the title, or that the server's data has not changed since the page loaded.
-
-“Valid under these checks” and “accepted by the save operation” are separate results. A failed save must not erase a usable draft or display success merely because client validation passed.
-
-### Dirty does not mean different now
-
-Suppose the accepted title is “Read the DOM article”:
-
-```text
-Start:                 Read the DOM article
-Type a different title: Review the DOM article
-Type the original back: Read the DOM article
+```html
+<form>
+  <label for="native-title">Task title (required)</label>
+  <input id="native-title" name="title" type="text" required />
+  <button type="submit">Save task</button>
+</form>
 ```
 
-The current text equals the accepted text again. The history still includes an edit. A dirty flag records that history until it is explicitly cleared; it is not a continuously recomputed comparison with accepted data.
+Clicking Save, or pressing Enter while the text input has focus, **submits** the form. Submitting has a built-in default action, so the browser does all of this without any JavaScript:
 
-If a feature needs the precise question “Would saving change this record?”, compare the relevant draft values with the accepted values under an explicit comparison policy. Do not use `dirty` as an equality test.
+1. It checks the built-in constraints, such as `required`. If one fails, it stops, shows a small message bubble next to the field, and moves focus there.
+2. Otherwise it collects every field that has a `name` into pairs like `title=Read+the+DOM+article`.
+3. It sends those pairs to the URL in the form's `action` attribute and loads the response as a new page. With no `action`, it uses the current page's URL, so the page reloads with `?title=…` added to the address.
 
-## Separate controls, the draft, and accepted data
+Many websites still save data this way, with a full page load for every save. An Angular editor saves with JavaScript and stays on the same page, so the browser's navigation has to be switched off.
 
-When someone types, the browser first changes the input's current text. Application code then reads that value and updates an edit draft. Only a confirmed save should update the accepted task used elsewhere on the page.
+There's a second problem. For a text input, `required` only rejects an empty string. A title made of three spaces isn't empty, so `required` accepts it. The task needs a stronger rule: some text must remain after removing the whitespace at both ends. And you'll want to decide yourself when messages appear and what they look like, instead of getting the browser's bubbles.
 
-A **control** is the interactive element, such as an input or textarea. The **draft** is application data representing the unfinished edit. The **accepted task** is the application's current accepted record, also called canonical state.
+So the editor in this article changes the form in two ways, and each one does a separate job:
+
+```html
+<form novalidate>
+```
+
+```js
+const form = document.querySelector("form");
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  console.log("Save with JavaScript:", form.elements.title.value);
+});
+```
+
+- `novalidate` turns off the browser's automatic checks and message bubbles when the form submits, because the editor will run its own rules and show its own messages.
+- `event.preventDefault()` cancels the default action of the `submit` event, so the browser doesn't send the data or load a new page. Your JavaScript decides what saving means.
+
+With `novalidate` alone, the page would still navigate. With `preventDefault()` alone, the browser would still check `required` before firing `submit`, so for an empty title it would show its bubble and your handler wouldn't run at all. So the editor uses both.
+
+Listening to the form's `submit` event, instead of the button's `click` event, also catches Enter from the title input. Enter in a multi-line `<textarea>` still inserts a new line, which is what you want for a description.
+
+Once the browser's checks are off, the editor has to replace everything they did: run the rules, show useful messages next to the right fields, and move focus to the problem. The rest of the article builds those pieces.
+
+## The draft and the accepted task
+
+When someone types into the title input, the browser first changes the input's text. Application code then reads that text and stores it somewhere. Where it stores it matters.
+
+The page component holds the **accepted task**: the version that's been saved and that the rest of the page displays. If every keystroke wrote straight into that task, the page would show half-typed titles, and Discard would have nothing to go back to.
+
+So the editor keeps a separate **draft**: a copy of the editable values that typing changes. Only a confirmed save copies the draft's values into the accepted task.
 
 ```text
-TaskPage owns the accepted Task
+TaskPage holds the accepted Task
   │
-  └── task input → TaskEditor owns { title, description } draft
+  └── task input → TaskEditor holds a { title, description } draft
                       ↑ typing updates this draft only
                       │
-                      └── confirmed saved output → page replaces accepted values
+                      └── saved output, after a confirmed save → page replaces its accepted values
 
-Discard → copy current accepted values back into the draft
-          reset interaction history; do not change the accepted task
+Discard → copy the current accepted values back into the draft
+          clear the field history; leave the accepted task alone
 ```
 
-The form library will attach validation and interaction state to the draft. It does not create an ownership boundary automatically: wrapping the page's accepted task directly would make each keystroke change accepted data.
-
-Save the shared contracts in `task.ts`:
+Save the shared types in `task.ts`:
 
 ```ts
 export interface Task {
@@ -96,78 +118,60 @@ export interface TaskEdits extends TaskDraft {
 }
 ```
 
-The editor does not edit `id` or `done`. Its typed `saved` output reports confirmed edits with an ID; the page applies them to its current record, preserving completion state.
+What to notice:
 
-Here “optional description” means the person may leave it blank. The form model still has a `description` property containing a string. A blank string and an absent JavaScript property are different representations; this editor deliberately uses the former.
+- `TaskDraft` holds only what the editor lets you change. There's no `id` or `done`, so the editor can't accidentally change them.
+- `TaskEdits` adds the `id` back. The editor's `saved` output sends one of these after a successful save, and the page uses it to update its task while keeping `done` as it was.
+- The description is optional in the sense that the person may leave it blank. The draft still has a `description` property; a blank description is the empty string `""`.
 
-The editor remains mounted after Save or Discard. Discard therefore cannot rely on destroying a component to remove its local state. It must restore data and interaction metadata deliberately. A Cancel action in an editor that closes would need the same ownership rule: do not apply its draft to accepted data.
+The editor stays on the page after Save and after Discard. So Discard can't rely on Angular destroying the component to throw away its state. It has to put the accepted values back into the draft and reset the field history on purpose. The next section explains what that history is.
 
-## Track independent questions independently
+## What a form tracks for each field
 
-Consider the actual mechanism before choosing flag names:
+A form library keeps a few flags for every field, next to its value. Follow one person through the title field to see what each one means.
 
-| Question                                           | State commonly used to answer it       |
-| -------------------------------------------------- | -------------------------------------- |
-| What is currently being edited?                    | Value                                  |
-| Which checks have failed?                          | Validation errors; valid/invalid state |
-| Has the person visited and left the field?         | Touched                                |
-| Has the person changed it through the control?     | Dirty                                  |
-| Is a validation check still waiting for an answer? | Pending validation                     |
-| Is a save action currently running?                | Submitting                             |
-| What happened when saving finished?                | Success or failure feedback            |
+Say the accepted title is "Read the DOM article":
 
-These states can coexist. A field may be invalid and untouched. It may be valid and dirty. An asynchronous validation check may be pending without having failed. A save request can be running even though no validation check is pending.
-
-**Touched** normally becomes true after the field loses focus, an event called blur. Submitting can also mark fields touched so errors become visible. Code can mark a field touched without a blur event.
-
-**Dirty** normally becomes true after a user edit. Programmatically changing a model is not necessarily a user edit, and putting an old value back does not clear the history. APIs also allow code to mark fields dirty or pristine. **Pristine** means dirty is false; it does not prove equality with an accepted record.
-
-**Pending validation** means an answer is not yet known. It is not another spelling of invalid. In Signal Forms, neither `valid()` nor `invalid()` has to be true while the answer is unknown. This example has only synchronous rules, so it does not need an asynchronous validator.
-
-**Submitting** covers the awaited save action. It ends on success or failure; its ending does not tell the interface which outcome occurred. Keep an explicit visible result too.
-
-Resetting is also an operation, not a comparison: it clears interaction history, and can optionally replace the draft values. Reset after a confirmed save or an explicit Discard—not after every submit attempt.
-
-## Separate validation rules from message visibility
-
-A title rule asks whether the value is acceptable. A display policy asks when its error should be presented. Keeping them separate avoids changing validation merely to hide a premature message.
-
-A useful policy for this editor is:
-
-- Check values whenever they change.
-- Show ordinary field errors after blur.
-- On submission, reveal errors even for fields that have not been visited.
-- Keep a returned title rejection visible until that title changes.
-
-### Native required is a narrower rule
-
-This independent HTML form demonstrates the browser's built-in behavior:
-
-```html
-<form>
-  <label for="native-title">Task title (required)</label>
-  <input id="native-title" name="title" type="text" required />
-  <button type="submit">Save task</button>
-</form>
+```text
+Open the editor:        Read the DOM article      valid, untouched, not dirty
+Click in, select all,
+type "Review the DOM article":                    valid, dirty
+Type the original back: Read the DOM article      valid, still dirty
+Press Tab to leave:                               valid, dirty, touched
+Clear the field:        (empty)                   invalid, dirty, touched
 ```
 
-For this text input, `required` rejects an empty string. A string containing spaces is not empty, so `required` alone accepts it. The task needs a stronger rule: at least some text must remain after removing whitespace from the ends.
+Here's what changed at each step:
 
-Without custom handling, the browser checks native constraints before submission, presents its own feedback, and normally navigates when the form submits. The snapshot above is not a save implementation.
+- **Valid** and **invalid** describe the current value. The form re-checks the rules every time the value changes, so the answer is always up to date.
+- **Dirty** becomes true when the person changes the value through the input. Typing the original text back doesn't clear it. Dirty means "was edited at some point", and it stays true until code resets the field. A field that isn't dirty is called **pristine**.
+- **Touched** becomes true when the person leaves the field. Moving focus away from an element is called **blur**, so touched usually means "this field has been blurred at least once".
 
-The complete editor uses `novalidate` to turn off automatic browser validation feedback. Its submit handler also calls `preventDefault()` to stop navigation. Those are different jobs: `novalidate` does not prevent navigation, and `preventDefault()` does not validate a value.
+The flags are independent, so a field can be in any combination. An empty title in a brand-new task is invalid before anyone has clicked into it: the rule already fails, but the field is untouched. That's why "invalid" can't be the signal to show an error, and the next part of this section handles that timing.
 
-Application rules can also relate fields—for example, requiring a description when a particular task type is selected. That rule depends on more than one value, so checking each control in isolation is insufficient. This small editor needs only the nonblank-title rule; it does not introduce a cross-field validator.
+Dirty is history in the same way. If you need to know "would saving change this task?", compare the draft's values with the accepted task's values. Dirty can't answer that question, because it only records that an edit happened.
 
-Once native feedback is turned off, the application must provide its replacement: actual rules, visible useful messages, field associations, and a correction path. Keeping a native `required` attribute still expresses the requirement to the browser and accessibility APIs, but it does not make a schema's custom rules run.
+Two more pieces of state come up while saving:
 
-Native constraint validity and the form library's validation state are separate mechanisms. Do not assume that adding an HTML attribute defines a Signal Forms rule, or that importing a schema automatically supplies every native constraint attribute.
+- **Submitting** is true while a save is running. It turns false when the save ends, whether it worked or not, so the editor also needs a separate message that says which one happened.
+- **Pending** is true while an asynchronous rule, such as "ask the server whether this name is taken", is still waiting for an answer. While a check is pending, the field isn't valid yet. If no other check has failed, it isn't invalid either. This editor's rules are all synchronous, so its fields are never pending.
 
-## Describe the task rules once
+**Resetting** a field clears its touched and dirty flags, and can also replace its value. The editor resets after a confirmed save and after Discard, and leaves everything as it is after a failed save.
 
-The task requires a nonblank title. A description may be blank or omitted by another consumer. If a description is supplied, it must be text.
+### When to show an error
 
-A **schema** describes the expected data and its checks. This example uses Zod to express those rules in `task-schema.ts`:
+Whether a rule fails and when its message appears are two separate decisions. If you mix them, you end up changing the rules just to hide a message too early. This editor uses this policy:
+
+- Check the values every time they change.
+- Show a field's errors once the field is touched.
+- When the person submits, mark every field touched, so errors appear even for fields they never visited.
+- Show a title rejection from the server right away, and keep it until the title changes.
+
+So in the walkthrough above, the error for the empty title appears at the last step, because the field was already touched. In a brand-new task, it would appear when the person leaves the field or presses Save.
+
+## Describing the rules with a schema
+
+The task's rules are short: the title must contain more than whitespace, and the description may be blank or left out, but if it's there it must be text. A **schema** is an object that describes the expected shape of some data and the checks it must pass. This article uses the Zod library to write one, in `task-schema.ts`:
 
 ```ts
 import { z } from "zod";
@@ -183,11 +187,13 @@ export const taskSchema = z.object({
 });
 ```
 
-`z.object(...)` checks properties of an object. `z.string(...)` checks that a value is text. The refinement adds the nonblank condition and its message. `trim()` returns a new string without whitespace at its ends; using that string in the check does not change the original title.
+What to notice:
 
-`.optional()` allows an absent description or `undefined`. It does not require the editor to remove a property when its textarea is empty. An empty string is already valid text.
+- `z.object(...)` checks an object's properties, and `z.string(...)` checks that a value is text. The `error` option sets the message for that check.
+- `.refine(...)` adds a custom check. Here it fails when `title.trim()` is an empty string. `trim()` returns a new string without whitespace at the ends; it doesn't change `title` itself.
+- `.optional()` also allows the description to be missing or `undefined`. An empty string is already valid text, so the editor can keep sending `""`.
 
-These independent checks can be saved in `check-schema.ts` beside the schema:
+You can run the schema on its own to see what it accepts. Save these checks in `check-schema.ts`:
 
 ```ts
 import { taskSchema } from "./task-schema";
@@ -203,31 +209,24 @@ console.log(blankTitle.success); // false
 console.log(nonTextDescription.success); // false
 ```
 
-`safeParse` returns a result with either checked data or issues instead of throwing for a validation failure. An issue identifies what failed, with a message and a property path such as `title`.
+`safeParse` returns a result object instead of throwing when the data fails. When `success` is false, the result's `error` holds a list of **issues**: each one has a message and a path such as `["title"]` that says which property failed.
 
-### Standard Schema connects producer and consumer
+### How Angular reads a Zod schema
 
-A form library needs a way to ask a schema for its validation result. Otherwise it needs a different adapter for each validation library's API.
+Angular's forms code needs to ask a schema for its issues. There are several schema libraries, each with its own API, and Angular can't write an adapter for every one. **Standard Schema** solves that: it's a small shared interface that Zod and other libraries implement. Every compatible schema exposes the same validate function, and it returns either the checked value or a list of issues with messages and paths.
 
-**Standard Schema** defines a shared interface for that conversation. Compatible schemas expose a validation function whose result contains checked data or issues with messages and paths. Zod supplies the validator; Standard Schema is the interface, not another validator library.
+Angular's `validateStandardSchema` function calls that interface and attaches each issue to the matching form field. You'll see it in the editor later. Zod does the checking; Standard Schema is only the shape of the conversation between Zod and Angular.
 
-Angular's `validateStandardSchema` consumes that interface and routes issues to the corresponding fields. It does **not** write a schema's transformed output back into the form model. Adding a Zod trimming transform would therefore not silently normalize this editor's draft.
+## Checking on the client and on the server
 
-Here the schema only checks. The simulated save operation separately chooses to trim the **accepted title** and leave the description unchanged. Validation and normalization—changing data into the representation to store—are explicit, separate decisions.
+The editor's checks run in the browser, on the person's device, which is called the **client**. That makes them fast and helpful, but anyone can skip them: they can change the page with developer tools, or send a request with another program. The page's copy of the rules can also be out of date. So a real server checks every incoming request again, along with permissions and anything else only it knows, before it accepts the data.
 
-## Treat client validation as guidance, not acceptance
+That's why a title can pass every check in the browser and still fail to save. The editor has to handle two kinds of failure:
 
-Client code runs on the user's device. Someone can bypass the page, modify it, or send a request using another tool. Even an unmodified page can use rules or data that have become stale.
+- The server answered and rejected the title. The person needs to change the title.
+- The request never got an answer, for example because the network dropped. The title may be fine; the person needs to try again.
 
-A real server must independently validate incoming data and enforce its own permissions and current business rules before accepting it. Sharing a schema can reduce duplicated rules; it does not remove that server boundary or guarantee acceptance.
-
-The demonstration has no server. Its helper waits briefly, checks the same schema independently, and simulates one of three outcomes chosen by a labelled demo-only select:
-
-- **Success:** return confirmed edits, with the title trimmed.
-- **Field rejection:** return a useful title message even though the basic client rules passed.
-- **Network failure:** throw a known demonstration error, without claiming that a particular field is wrong.
-
-Save this in `demo-save.ts`:
+This article has no server, so `demo-save.ts` simulates one. It waits a moment, checks the same schema, and then picks one of three outcomes based on a demo-only select on the page: success, a title rejection, or a network failure.
 
 ```ts
 import type { TaskDraft } from "./task";
@@ -272,60 +271,280 @@ export async function saveTaskDraft(payload: TaskDraft, outcome: SaveOutcome): P
 }
 ```
 
-The typed helper is a simulation of this editor's two-string payload, not a general server endpoint. Its schema-failure branch is deliberately limited to that contract; a real receiver must validate unknown request data and return the appropriate field or form errors. No backend implementation is needed to demonstrate the client workflow.
+What to notice:
 
-A field rejection tells the person what to correct. A network failure says the operation could not complete, not that their title became invalid. Preserve the draft in both cases. For the network case, allow another attempt without forcing an unrelated text edit.
+- The `await new Promise(...)` line just waits 600 milliseconds, like a slow request would. `setTimeout` calls `resolve` after the delay, and that finishes the promise.
+- A rejection is **returned** as `{ kind: "field-error", message }`, because the server did answer: it said no. A network failure is **thrown** as a `DemoNetworkError`, because there's no answer at all, the same way `fetch` rejects when it can't reach the server. `class DemoNetworkError extends Error {}` creates a named error type, so the editor can recognize this exact failure with `instanceof` later.
+- On success, the simulated server trims the title before accepting it and returns the accepted values. The schema only checks; changing the data into the form you store, such as trimming, is a separate step that the server does here.
+- A real server would receive unknown data from the network and would need to validate all of it. This helper only takes the editor's typed two-string draft, because it exists to demonstrate the editor's side.
 
-## Make submission a complete workflow
+In both failure cases the editor keeps the draft. After a rejection, the person changes the title and saves again. After a network failure, they can press Save again with the same text.
 
-Use a native `<form>` and a submit button. Listening to the form's `submit` event includes the ordinary Enter submission path from its text input, not only mouse clicks on Save. Enter in the multiline description still inserts a newline.
+## The save workflow
 
-The workflow is:
+Here's everything that happens after the form submits:
 
 ```text
-Native submit
-  → reveal field errors and check validation
-  → if invalid: skip saving and focus the first rejected field
-  → otherwise: capture one payload and the selected simulated outcome
-  → pause draft edits, Discard, and repeated saves during the request
-  → await the save result
-       ├── field rejection: keep draft, associate error, focus title
-       ├── network failure: keep draft, show retry guidance, focus title
-       └── success: report confirmed edits, reset to confirmed values
-  → unlock controls and leave a useful focus destination
+Submit
+  → mark every field touched and check the rules
+  → if a rule fails: skip saving and focus the first field with an error
+  → otherwise: capture the payload and the selected simulated outcome
+  → lock the fields, Discard, and Save while the request runs
+  → wait for the result
+       ├── title rejection: keep the draft, show the message on the title, focus the title
+       ├── network failure: keep the draft, show retry guidance, focus the title
+       └── success: send the confirmed edits to the page, reset the draft to them
+  → unlock everything and leave focus somewhere useful
 ```
 
-Capturing a **payload** means taking the data for this particular request before waiting. Do not reread an editable draft after `await` and accidentally treat newer text as the value that was sent.
+A few steps need explaining.
 
-This example uses a simple edit policy: title and description are temporarily readonly during the bounded simulated request. Save and Discard are disabled only while submitting. There is no cancellation, timeout, retry loop, or background race-management system.
+**Capture the payload.** The **payload** is the data sent with one request. The editor copies the draft into a new object before it starts waiting. If it read the draft again after the wait, it could pick up text typed in the meantime and treat it as what was sent.
 
-A disabled-invalid Save button is not the only feedback. Here Save remains available when a rule fails so submission can reveal what needs correction. The handler still blocks invalid data. Duplicate prevention belongs in the submission operation as well as the button's presentation.
+**Lock the form while saving.** The title and description become read-only while the request runs, and Save and Discard are disabled. That keeps the draft and the payload the same and prevents a second save from starting. The save code also returns early if a save is already running. The button only becomes disabled after Angular updates the page, so that check stops a second submit that arrives first.
 
-On success, the returned values become the new accepted record and the clean draft. On failure, neither happens. “Request finished” alone is not permission to reset the form.
+**Keep Save clickable when there are errors.** Many forms grey out Save until everything is valid. This one doesn't, because a disabled button can't tell anyone *what's* wrong. Clicking Save reveals the errors and moves focus to the first one. The save code still refuses invalid data, so nothing invalid reaches the server.
 
-## Connect the workflow to Signal Forms
+**Reset only after success.** On success, the confirmed values become both the page's accepted task and the editor's fresh draft. On failure, neither changes. "The request finished" isn't enough to reset the form; only "the request succeeded" is.
 
-Angular also has reactive forms and template-driven forms. They solve form work through different APIs; this article uses Signal Forms for the signal-owned draft, not a three-way tutorial.
+## Building the editor with Signal Forms
 
-The relevant pieces map directly to the questions already established:
+Angular has three form APIs: reactive forms, template-driven forms, and Signal Forms. This article uses **Signal Forms**, from `@angular/forms/signals`, because it builds the form directly on top of a signal that holds the draft.
 
-| Mechanism                   | Signal Forms API in this editor            |
-| --------------------------- | ------------------------------------------ |
-| Writable draft data         | `linkedSignal<Task, TaskDraft>`            |
-| Fields mirroring that data  | `form(draft, rules)` returns a field tree  |
-| Control-to-draft connection | `[formField]` with `FormField`             |
-| Schema checks               | `validateStandardSchema(path, taskSchema)` |
-| Field errors and history    | `errors()`, `touched()`, `dirty()`         |
-| Request lifecycle           | `submit(...)` and `submitting()`           |
-| Restore data and history    | `reset(value)`                             |
+Before the API names, here's what happens when someone types "R" into the title input once everything is wired up:
 
-A **field tree** follows the model's shape. `editorForm.title` identifies the title field; calling `editorForm.title()` accesses its state. Calling `editorForm()` accesses root state for the whole draft. Signals such as `touched()` and `submitting()` are read by calling them.
+```text
+You type "R" in the title input
+  → the FormField directive hears the input's "input" event
+  → it writes the new text into draft().title and marks the title dirty
+  → editorForm.title().errors() re-runs the schema check on the new value
+  → Angular re-renders the template, showing or hiding the error
+```
 
-`FormField` connects a native control's value and interaction events to its field. It also owns native constraint attributes and applies readonly state. Do not add competing `[value]`, `(input)`, `[readonly]`, or literal `required` bindings to those same controls.
+The rest of this section builds each piece of that chain in `task-editor.ts`. The full file is at the end of the section.
 
-The Zod schema does not supply Angular's native constraint metadata. `metadata(path.title, REQUIRED, () => true)` supplies the field's required metadata so `FormField` exposes the native requirement. It adds no second validation rule; the Zod schema still performs the checks.
+### The draft and the form
 
-Save the complete editor in `task-editor.ts`:
+```ts
+export class TaskEditor {
+  readonly task = input.required<Task>();
+  readonly saveOutcome = input.required<SaveOutcome>();
+  readonly saved = output<TaskEdits>();
+  readonly status = signal("");
+  private readonly injector = inject(Injector);
+
+  readonly draft = linkedSignal<Task, TaskDraft>({
+    source: this.task,
+    computation: (task, previous) => {
+      if (previous?.source.id === task.id) {
+        return previous.value;
+      }
+
+      return { title: task.title, description: task.description };
+    },
+  });
+```
+
+What to notice:
+
+- `task` is the accepted task from the page, `saveOutcome` is the demo select's value, and `saved` reports confirmed edits back. `status` holds the message shown under the buttons.
+- `draft` is a `linkedSignal`: a writable signal that recalculates when its `source` changes. When the page sends a task with a new ID, the draft starts over from that task. When the page replaces the task but the ID is the same, the draft keeps the current text. The [composition article](/dump/blog/angular-component-composition/) explains this same-ID rule in detail.
+- `this.task` is passed without calling it. Angular creates the component class first and sets its inputs afterwards, so calling `this.task()` while the class is being created would throw an error for a required input. `linkedSignal` reads it later, when something first reads the draft.
+
+Next comes the form itself:
+
+```ts
+  readonly editorForm = form(this.draft, (path) => {
+    validateStandardSchema(path, taskSchema);
+    metadata(path.title, REQUIRED, () => true);
+    readonly(path.title, { when: ({ stateOf }) => stateOf(path).submitting() });
+    readonly(path.description, { when: ({ stateOf }) => stateOf(path).submitting() });
+  });
+```
+
+`form(this.draft, rules)` returns a **field tree**: an object with the same shape as the draft, where every property is a field. `editorForm.title` is the title field, and calling it, `editorForm.title()`, gives you that field's state: `value()`, `errors()`, `valid()`, `invalid()`, `touched()`, `dirty()`, and more. Calling `editorForm()` gives you the state of the whole form, including `submitting()`. Each of these is a signal, so you read it by calling it. Writing to a field writes into the `draft` signal, so the draft and the form always agree.
+
+The second argument lists the rules, using `path` to point at fields:
+
+- `validateStandardSchema(path, taskSchema)` runs the Zod schema on the whole draft and attaches each issue to its field.
+- `metadata(path.title, REQUIRED, () => true)` marks the title as required, so Angular adds the native `required` attribute to the input. Screen readers announce that attribute. The schema does all the checking; Zod schemas don't carry this kind of metadata, which is why it's declared separately.
+- The two `readonly(...)` calls make both fields read-only whenever the form is submitting. That's the lock from the workflow.
+
+### Connecting the inputs
+
+Here's the title part of the template, without styling classes:
+
+```html
+<form novalidate (submit)="save($event)">
+  <label for="draft-title">Task title (required)</label>
+  <p id="title-help">Use a title containing more than whitespace.</p>
+  <input
+    id="draft-title"
+    type="text"
+    [formField]="editorForm.title"
+    aria-describedby="title-help title-error"
+    [attr.aria-invalid]="showTitleErrors() && editorForm.title().invalid()"
+  />
+  <p id="title-error" aria-live="polite">
+    @if (showTitleErrors()) {
+      @for (error of editorForm.title().errors(); track error) {
+        <span>{{ error.message }}</span>
+      }
+    }
+  </p>
+```
+
+What to notice:
+
+- The `<form>` has `novalidate` and calls `save($event)` on `submit`, the same two pieces from the plain HTML section.
+- `[formField]="editorForm.title"` uses the `FormField` directive to connect the input to the title field. It writes typed text into the field, marks the field dirty and touched at the right moments, and sets the input's value, `required`, and `readonly` attributes from the field state. Because it handles all of those, you don't add your own `[value]`, `(input)`, `[readonly]`, or `required` to the same input.
+- The error paragraph lists the field's messages only when `showTitleErrors()` is true. That's the display policy, and it's defined in the next slice.
+- `aria-describedby`, `aria-invalid`, and `aria-live` connect the help text and the error to the input for screen readers. The [accessibility article](/dump/blog/accessibility-in-practice/) explains that pattern. The only new part is that `aria-invalid` follows the same `showTitleErrors()` check, so the accessible invalid state follows the same condition as the visible error.
+
+The description field uses the same pattern with `[formField]="editorForm.description"`, and it shows its errors once `editorForm.description().touched()` is true. The buttons and status message finish the form:
+
+```html
+  <button type="submit" [disabled]="editorForm().submitting()">Save task</button>
+  <button type="button" [disabled]="editorForm().submitting()" (click)="discard()">
+    Discard edits
+  </button>
+  <p id="save-status" role="status" aria-atomic="true">{{ status() }}</p>
+</form>
+```
+
+Both buttons are disabled only while a save is running. Discard is `type="button"`, so clicking it doesn't submit the form.
+
+### When the title shows its errors
+
+```ts
+  readonly showTitleErrors = computed(() => {
+    const field = this.editorForm.title();
+    if (field.touched()) {
+      return true;
+    }
+
+    for (const error of field.errors()) {
+      if (error.kind === "server") {
+        return true;
+      }
+    }
+    return false;
+  });
+```
+
+This `computed` signal is the display policy for the title. It's true once the field is touched, which covers both "left the field" and "pressed Save", because submitting marks every field touched. It's also true while the title carries an error of kind `"server"`, which is the kind the editor gives to the simulated server's rejection. That keeps a rejection visible even after a reset clears the touched flag, a case covered in [Going further](#going-further).
+
+### Saving
+
+The `save` method uses Signal Forms' `submit` function. You give `submit` the form and two callbacks, and it runs the checks for you:
+
+1. It marks every editable field touched.
+2. If the form is invalid, it calls your `onInvalid` callback and stops.
+3. Otherwise it sets `submitting()` to true, calls your `action` callback, and waits for it.
+4. If `action` returns an error object, `submit` attaches that error to the field it names. When `action` finishes or throws, `submitting()` goes back to false.
+
+```ts
+  async save(event: SubmitEvent) {
+    event.preventDefault();
+    if (this.editorForm().submitting()) {
+      return;
+    }
+
+    let confirmed: TaskDraft | undefined;
+    this.status.set("");
+    try {
+      await submit(this.editorForm, {
+        ignoreValidators: "none",
+        onInvalid: () => {
+          this.status.set("Check the fields below. Nothing was saved.");
+        },
+        action: async (fields) => {
+          const payload = { ...this.draft() };
+          const taskId = this.task().id;
+          const outcome = this.saveOutcome();
+          this.status.set("Saving… Editing is paused.");
+
+          const result = await saveTaskDraft(payload, outcome);
+          if (result.kind === "field-error") {
+            this.status.set("Not saved. Correct the title, then save again.");
+            return { kind: "server", message: result.message, fieldTree: fields.title };
+          }
+
+          this.saved.emit({ id: taskId, ...result.value });
+          confirmed = result.value;
+          this.status.set("Task saved. The accepted title has been trimmed.");
+          return undefined;
+        },
+      });
+```
+
+What to notice:
+
+- `event.preventDefault()` stops the browser's navigation, and the early return ignores a second submit while one is running. Signal Forms also refuses to start a second `submit` for the same form, but returning early keeps the status message and focus from being replaced.
+- `ignoreValidators: "none"` tells `submit` to run `action` only when every rule has passed. By default it would also run while some rules are still pending. This editor has no pending rules, but the stricter setting matches the workflow: save only data that's known to be valid.
+- Inside `action`, the first three lines capture the payload, the task ID, and the outcome before the `await`. That's the capture step from the workflow.
+- A rejection returns `{ kind: "server", message, fieldTree: fields.title }`. `submit` adds it to the title's `errors()`, so the template shows it like any other title error. Signal Forms removes that error automatically as soon as the title's value changes.
+- On success, `saved.emit(...)` sends the confirmed edits to the page, and `confirmed` remembers them for the reset below. Returning `undefined` tells `submit` that there are no errors to attach.
+
+A network failure is a thrown `DemoNetworkError`, so it passes through `submit` and lands in the `catch` block:
+
+```ts
+    } catch (error: unknown) {
+      if (!(error instanceof DemoNetworkError)) {
+        throw error;
+      }
+      this.status.set("Not saved: simulated network failure. Your draft is kept. Try Save again.");
+    } finally {
+      afterNextRender(
+        () => {
+          if (confirmed !== undefined) {
+            this.editorForm.title().focusBoundControl();
+            this.editorForm().reset(confirmed);
+            return;
+          }
+
+          const errors = this.editorForm().errorSummary();
+          if (errors.length > 0) {
+            errors[0].fieldTree().focusBoundControl();
+            return;
+          }
+          this.editorForm.title().focusBoundControl();
+        },
+        { injector: this.injector },
+      );
+    }
+  }
+```
+
+What to notice:
+
+- The network failure becomes a status message for the whole form, and the title gets no error, because nothing is wrong with the title. The person can press Save again with the same text.
+- Any other error is thrown again. A bug in the code shouldn't be shown to the person as "network failure".
+- The `finally` block runs in every case. `afterNextRender` waits until Angular has updated the page, so the fields are unlocked and any error messages are rendered before focus moves. It needs the `injector` because Angular functions like this one can find the component's injector on their own only while the class is being created, and `save` runs much later. The next section explains where focus goes.
+- On success, `reset(confirmed)` puts the confirmed values into the draft and clears touched and dirty. It runs after focus moves to the title: moving focus out of the description blurs it, and if the reset ran first, that blur would mark the description touched again right away.
+
+### Discarding
+
+```ts
+  discard() {
+    if (this.editorForm().submitting()) {
+      return;
+    }
+
+    const accepted = this.task();
+    this.editorForm().reset({ title: accepted.title, description: accepted.description });
+    this.status.set("Draft restored to the current accepted values.");
+    this.editorForm.title().focusBoundControl();
+  }
+}
+```
+
+Discard reads the page's **current** accepted task, so after a successful save it restores the saved values, not the sample task the page started with. `reset(...)` replaces the draft and clears the field history in one step. The accepted task never changes, because typing only ever wrote to the draft.
+
+Here are the full files for the editor and the page:
+
+<details>
+<summary>Full <code>task-editor.ts</code></summary>
 
 ```ts
 import {
@@ -488,6 +707,7 @@ export class TaskEditor {
           this.saved.emit({ id: taskId, ...result.value });
           confirmed = result.value;
           this.status.set("Task saved. The accepted title has been trimmed.");
+          return undefined;
         },
       });
     } catch (error: unknown) {
@@ -529,35 +749,46 @@ export class TaskEditor {
 }
 ```
 
-### Initialization and draft lifetime
+</details>
 
-The required `task` input is not available during class initialization. The linked signal receives a source function; it does not eagerly call `task()` there. `form` receives that writable signal rather than an already-read input value. The first rendered field reads the draft after Angular supplies the input.
+### The page component
 
-For the same task ID, the linked computation preserves the current draft when the page replaces its accepted record. That is the intentional same-ID lifetime from the ownership article. Success explicitly resets it to confirmed values; Discard explicitly reads the **current** accepted values. Neither relies on changing the input object to overwrite unfinished text.
+The page component holds the accepted task and the demo select. These are the parts that matter here:
 
-This page has one task and no competing writer. Supporting concurrent external edits or switching tasks while a save runs would require another explicit policy; those are not hidden features of this example.
+```ts
+export class TaskPage {
+  readonly task = signal<Task>({
+    id: 1,
+    title: "Read the DOM article",
+    description: "Note how a native form submits.",
+    done: false,
+  });
+  readonly saveOutcome = signal<SaveOutcome>("success");
 
-### Validation, submission errors, and readonly are different mechanisms
+  setSaveOutcome(value: string) {
+    if (value !== "success" && value !== "field-error" && value !== "network-error") {
+      throw new Error("Unknown simulated save outcome.");
+    }
+    this.saveOutcome.set(value);
+  }
 
-`submit` marks interactive fields touched and checks the form before running `action`. `onInvalid` handles that pre-action failure; it does not run for a rejection returned by the action.
+  acceptEdits(edits: TaskEdits) {
+    this.task.update((current) => {
+      return { ...current, title: edits.title, description: edits.description };
+    });
+  }
+}
+```
 
-`ignoreValidators: "none"` requires a known-valid result. Signal Forms otherwise ignores pending validators by default when no validator has failed. There are no asynchronous validation rules here, but the distinction prevents “not currently invalid” from being taught as “all checks have passed.”
+What to notice:
 
-Returning `{ kind, message, fieldTree }` from the action routes a submission error to the title field. Changing that title automatically clears the returned error. Schema errors instead recompute from the new value and can fail again. Changing only the description does not clear a title rejection; a retry with the identical rejected title remains blocked until the title changes.
+- The template uses the editor as `<task-editor [task]="task()" [saveOutcome]="saveOutcome()" (saved)="acceptEdits($event)" />`, so the page hears about confirmed saves only, never single keystrokes.
+- `acceptEdits` builds a new task object from the current one, so `id` and `done` stay as they were.
+- A `<select>` element always gives you a string. `setSaveOutcome` checks the string before storing it as a `SaveOutcome`. A type assertion such as `value as SaveOutcome` would only silence TypeScript; it wouldn't check anything.
+- The editor captures the outcome when a save starts, so changing the select during a save affects the next save only.
 
-The known network exception is handled outside `submit`. It becomes form-level status feedback, not a title validation error, so the unchanged draft can be retried. Unexpected exceptions are rethrown rather than mislabeled as connection problems. Signal Forms releases its submitting state in its own `finally` path.
-
-Readonly is not just a visual lock. In Signal Forms, readonly fields do not contribute to their parent's aggregate validation and interaction state. Here it becomes active **after** the validation gate, while `action` is running. The captured payload is already fixed; the code does not read apparent aggregate validity during that temporary exclusion as a save result. Returned errors are shown after submitting ends and the fields become interactive again.
-
-Signal Forms also prevents another concurrent submission of the same form or a descendant from running the action. The handler's early return additionally avoids replacing feedback or scheduling focus for a repeated native event. Disabled buttons alone would not protect the operation.
-
-`reset(value)` clears touched/dirty history and sets the supplied draft values. In Angular 22.2.1 it does not explicitly erase every submission error: those clear when their targeted value changes. If Discard restores a different title, that change clears its rejection. If it restores the identical previously rejected title, the rejection remains visible through `showTitleErrors`, even though interaction history has reset. Resetting history should not pretend that a known rejection never happened.
-
-The render callback in `finally` moves focus after the controls have unlocked and errors have rendered. It uses the first error's bound control, or the title for success/network feedback. On success, it resets to the confirmed values **after** moving focus: leaving the description can cause blur, so resetting first could immediately make that field touched again. This is an inline editor, not a dialog with a focus trap.
-
-### The page remains the accepted-data owner
-
-Save the consumer in `task-page.ts`:
+<details>
+<summary>Full <code>task-page.ts</code></summary>
 
 ```ts
 import { Component, signal } from "@angular/core";
@@ -637,9 +868,7 @@ export class TaskPage {
 }
 ```
 
-The native select supplies a string. `setSaveOutcome` checks that external control value before storing it in the narrower union type. A type assertion would not validate the string.
-
-The page receives confirmed edits, not each keystroke. Its immutable replacement preserves the current `id` and `done`. There is only one permanently rendered task here, so no collection search or deletion workflow is needed. The selector affects the next captured outcome; changing it during a request does not change the outcome already captured for that request.
+</details>
 
 Bootstrap it in `main.ts`:
 
@@ -650,66 +879,62 @@ import { TaskPage } from "./task-page";
 bootstrapApplication(TaskPage);
 ```
 
-Use `<task-page></task-page>` in the host document, replacing the earlier page host. Keep the styling article's CSS entry, `data-theme="dark"` on `<html>`, and `class="bg-page font-sans text-foreground"` on `<body>`. The six running-example files are `task.ts`, `task-schema.ts`, `demo-save.ts`, `task-editor.ts`, `task-page.ts`, and `main.ts`; `check-schema.ts` is an independent check, not another application component.
+In the host HTML page, replace the earlier page element with `<task-page></task-page>`, and keep the styling article's CSS file, `data-theme="dark"` on `<html>`, and `class="bg-page font-sans text-foreground"` on `<body>`. The app is made of `task.ts`, `task-schema.ts`, `demo-save.ts`, `task-editor.ts`, `task-page.ts`, and `main.ts`. `check-schema.ts` is only for trying the schema on its own.
 
-This example handles the native submit event explicitly so the awaited result and post-render focus path are visible in one method. Signal Forms also offers `FormRoot`: binding it to a native form supplies `novalidate`, prevents navigation, and calls `submit` using submission options configured on `form`. Choose one event owner, not both handlers for the same form.
+## Focus after saving and discarding
 
-## Make correction accessible
+The [accessibility article](/dump/blog/accessibility-in-practice/) covers labels, help text, error associations, and live regions in depth. Two things are specific to this editor: where focus goes after each action, and what the read-only lock does while saving.
 
-A message is useful only if the person can discover it, understand what to change, and reach the control needed to change it.
+**Focus.** `focusBoundControl()` moves keyboard focus to the input connected to a field. The editor uses it so that, after every action, focus lands on the input the person most likely needs next:
 
-Each field keeps a visible native label. The label gives the control its name. Help and errors have separate IDs, and the field references **both** through `aria-describedby`:
+| After…                      | Focus goes to                                         |
+| --------------------------- | ----------------------------------------------------- |
+| A submit with failing rules | The first field with an error, from `errorSummary()` |
+| A title rejection           | The title, which now shows the server's message       |
+| A network failure           | The title, so pressing Enter saves again              |
+| A successful save           | The title, ready for the next edit                    |
+| Discard                     | The title                                             |
 
-```text
-Title name:        label for="draft-title"
-Title description: aria-describedby="title-help title-error"
-Title state:       aria-invalid becomes true when a shown error exists
-```
+`errorSummary()` lists the errors of a field and everything inside it, in field order, so `errors[0]` belongs to the first field that needs fixing. This is an inline editor, so focus stays in the normal page order; there's no dialog and no focus trap.
 
-`aria-invalid` reports the failed state. It supplies neither the error message nor the control's name. Putting an error paragraph nearby also does not create an association unless the field references it.
+**The read-only lock.** While saving, both fields are read-only. The person can still focus them, select text, and read them, but can't change them. One detail can surprise you: in Signal Forms, a read-only field doesn't count toward its parent's state, so while a save is running, the form's `valid()` ignores both fields. That's fine here, because the editor checked validity before the save started and doesn't look at it again until the save ends.
 
-The help/error elements remain present, with initially empty error text. Error changes use polite live feedback; the form-level busy/success/failure paragraph uses `role="status"`. Association makes information available with a field; a live region requests notification when text changes. Those are different jobs, not a promise of exact spoken output or announcement order.
+## Trying the editor
 
-A failed submit focuses the first rejected field after its message is rendered. Save failure retains the draft. Success and Discard leave focus at the unlocked title field so another edit can begin. Native Tab and Shift+Tab follow the DOM order; Space activates the buttons. There are no positive `tabindex` values or custom button keyboard handlers.
+Run the app and go through these steps. Each one checks one idea from the article.
 
-The interface is a narrow extension of the existing task editor: the same palette, readable muted help, visible `focus-visible` outlines, and comfortably sized controls. Buttons wrap, fields can shrink, and accepted titles/descriptions can break even when a value has no spaces. Check both themes at narrow widths and larger text; a class name is not evidence that overflow or contrast is correct.
+1. Open the page. The draft matches the accepted task, and no error is shown.
+2. Type a different title, then type the original back. The accepted task never changes, and the title stays dirty until a reset.
+3. Clear the title, or type only spaces, and press Tab. The error appears. Then reload, clear the title without leaving it, and press Enter: the error appears and nothing is saved.
+4. Leave the description blank and save a title with spaces at both ends. The accepted title is trimmed, the description stays blank, and the draft resets to the trimmed values.
+5. Choose "Title rejection" and save. The draft is kept, the accepted task doesn't change, and the title shows the server's message. Pressing Save again with the same title doesn't start a save; the status asks you to check the fields. Change the title and the message disappears.
+6. Choose "Network failure" and save. The status message offers a retry, the title shows no error, and pressing Save again with the same text runs another save.
+7. While a save is running, try typing, pressing Discard, and pressing Save again. Nothing changes until the save finishes, and only one save runs.
+8. Change both fields, then press Discard. The draft goes back to the current accepted task, including any title saved in step 4.
+9. Repeat a few steps with the keyboard only: Enter in the title to save, Tab and Shift+Tab to move, and Space to press the buttons.
 
-### Walk the actual interaction
+## Going further
 
-1. Open the page. Confirm the draft matches accepted data, touched/dirty are false, and no early error is shown.
-2. Type a different title, then put the original back. Confirm accepted data never changed and dirty stays true until reset.
-3. Blur an empty or whitespace-only title. Confirm its useful message, invalid state, and associated help/error text. Submit an invalid draft with unvisited fields too; no save action should run.
-4. Leave the description blank and save a nonblank title containing spaces at its ends. Confirm the accepted title is trimmed, the description stays blank, and the draft is reset to those confirmed values with clean interaction history.
-5. Choose Title rejection. Save, confirm the draft is kept and accepted data is unchanged, then change the title to clear its returned error. A retry without correcting that title should not run another save.
-6. Choose Network failure. Confirm visible form-level retry guidance, no false title error, preserved draft, and an unchanged-value retry. Unexpected programming failures must not be presented as network failures.
-7. During the simulated request, try typing, Discard, and repeated submission. Confirm one captured payload and one save operation, then editable controls and deliberate focus after completion.
-8. Change both fields, then Discard. Confirm restoration from the current accepted record rather than the page's original sample values.
-9. Repeat using Enter from the title, Tab/Shift+Tab, and Space on buttons. Try literal HTML-looking text and long unbroken values; they should remain text, not markup, and not widen the page.
-10. At a real 320 CSS-pixel viewport, check dark mode with a 16px root font and light mode with a 32px root font. Scroll vertically to reach every control; no horizontal page overflow should be needed.
+These details didn't fit the main path, but you'll run into them in larger forms.
 
-Strict compilation, browser interactions, and accessibility-tree inspection provide different evidence. Automated accessibility checks can help, but cannot establish useful speech behavior or that the whole workflow makes sense. See the [accessibility article's verification approach](/dump/blog/accessibility-in-practice/#inspect-more-than-the-screenshot) rather than treating a clean automated result as a certificate.
+- **Rules that compare fields.** Some rules depend on more than one field, such as "a description is required when the task is marked urgent". The schema can express those with a refinement on the whole object that names a field in its issue `path`, and `validateStandardSchema` then shows the error on that field.
+- **Schema transforms.** Zod can transform values, for example trimming a string while it parses. `validateStandardSchema` only reads the issues from the schema and never writes the transformed value back into the draft. That's why the simulated server trims the title in its own code.
+- **Reset and server errors.** `reset(value)` clears touched and dirty but leaves a server error in place. The server error disappears only when the field's value changes. So if Discard restores a title that's different from the rejected one, the error goes away. If it restores the same rejected title, the error stays, and `showTitleErrors` keeps it visible even though touched is false again.
+- **`FormRoot`.** Signal Forms also has a `FormRoot` directive. When you write `<form [formRoot]="editorForm">`, it adds `novalidate`, calls `preventDefault()`, and runs `submit` with options you pass to `form()` when creating the form. This editor handles `submit` itself so that the whole save, including focus, is visible in one method. Use one approach per form, never both.
 
 ## Closing check
 
-1. How can a field be invalid and untouched at the same time?
-2. Why does Discard need a separate draft rather than direct edits to the accepted task?
-3. Why can dirty remain true after restoring the original text?
-4. What does `required` on a native text input miss about a title made only of spaces?
-5. What does Standard Schema supply, and what still comes from Zod and Angular?
-6. Why can a client-valid title fail to save, and why are field rejection and network failure handled differently?
-7. What should reset after success, and what should remain after failure?
-8. Why does a field reference the error ID alongside its help ID?
+The opening asked for an editor that waits to show errors, survives a failed save, and can throw away edits. It does that by keeping the text, the rules, the interaction history, and the save result apart. Typing changes only the draft, so Discard and failed saves leave the accepted task alone. The rules check the value all the time, while touched decides when the person sees the result. And each save ends with an explicit result, so a rejection, a network failure, and a success each get their own response.
+
+1. A new task's title is empty and invalid, but no error is visible. Why, and what makes the error appear?
+2. Why does Discard work even though the person typed for a while, and why does dirty stay true after they type the original title back?
+3. A title passes every check in the browser, but the save fails. What should the editor keep, and how should a title rejection differ from a network failure?
 
 Check your reasoning:
 
-- Validation describes the current value; touched describes interaction history. A rule can fail before any interaction.
-- Typing changes only the draft. Discard can restore accepted values because they were never overwritten by those keystrokes.
-- Dirty records an edit until explicitly cleared; it does not compare current values with accepted data.
-- Native `required` rejects an empty string, not every nonblank-policy failure. The custom refinement checks meaningful text after trimming for comparison.
-- Standard Schema defines the shared validation-result interface. Zod performs the checks; Angular connects their issues to form fields and manages interaction/submission state.
-- The client is bypassable and may be stale; the receiver independently decides acceptance. A field rejection needs correction, while a network failure needs retry guidance without blaming a field.
-- Success applies confirmed edits and resets draft values/history. Failure keeps accepted data unchanged and retains the person's draft with an actionable result.
-- The label supplies the name, `aria-invalid` supplies state, and `aria-describedby` associates the help and error explanation. None replaces the others.
+- Invalid describes the value; touched describes what the person has done. The rule fails immediately, but the editor shows errors only once the field is touched, which happens when the person leaves the field or presses Save.
+- Typing only changes the draft, so the accepted task is still there to copy back. Dirty records that an edit happened, and only a reset clears it; it never compares values.
+- The server makes the final decision, so client checks can't promise success. The editor keeps the draft in both cases. A rejection attaches the server's message to the title until the title changes; a network failure shows a form-level message and lets the person retry with the same text.
 
 ## Sources and further reading
 

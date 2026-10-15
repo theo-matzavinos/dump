@@ -1,7 +1,8 @@
 ---
 title: "Components + Tailwind: benefits and tradeoffs"
-description: "A practical case for local styling, component-based reuse, fewer selector relationships, shared design values, visual control, and faster iteration—without pretending other approaches are obsolete."
+description: "When you need to change how a task row looks, where do you go and what else changes? Compare plain CSS, Sass, UI libraries, and Angular component styles, then see what Angular components with Tailwind make easier and what they cost."
 pubDate: "2026-10-02"
+updatedDate: "2026-10-15"
 tags:
   - css
   - tailwind
@@ -9,65 +10,31 @@ tags:
   - frontend
 ---
 
-Changing the spacing in a task row is easier to follow when the row has one implementation and every instance uses it. A completed state is easier to trace when its presentation sits beside the condition that selects it. A shared color is easier to change consistently when the interface uses one named value.
+Say a designer asks for two changes to the task board from [part 1: behavior](/dump/blog/frontend-evolution-behavior/). Each task row needs more breathing room, and completed tasks should look finished while their titles stay readable. Then a third request arrives: the board should offer a light theme as well as the dark one.
 
-Components and Tailwind address different parts of that work. A component can reuse the row's structure, interaction, and presentation. Tailwind utilities compose styling on the elements that need it. Shared design values keep those local compositions connected to the same decisions.
+None of these touches the task data. They're presentation changes, and they all raise the same question:
 
-The pairing offers six potential benefits: **locality, component-based reuse, less selector management, consistent design values, visual control, and faster iteration**. Understanding how those benefits arise—and what they cost—is more useful than comparing the length of class lists.
+> When you need to change how something looks, where do you go, and what else changes with it?
 
-Each part matters. Components without Tailwind can work well. Utilities without shared decisions can still produce an inconsistent interface. Neither removes the need to understand CSS.
+This article answers that question for plain CSS, Sass, a UI library, and Angular component styles. Then it spends most of its time on one combination: Angular components styled with Tailwind utility classes. You'll see which changes that combination makes easier, and what you pay for it.
 
-The examples continue the task interface from [part 1: behavior](/dump/blog/frontend-evolution-behavior/): a form, a filter, task checkboxes, and a remaining count. This time the changes are presentation changes. The [CSS layout article](/dump/blog/css-layout-fundamentals/) explains the underlying sizing and layout mechanisms.
+You'll need the Angular task board from part 1 for the code examples. If flexbox or `rem` units are new to you, read the [CSS layout article](/dump/blog/css-layout-fundamentals/) first, because the examples rely on both. The code uses Angular 22.2.1 and Tailwind CSS 4.3.3.
 
 ## Contents
 
-1. [Start with the work, not the syntax](#start-with-the-work-not-the-syntax)
-2. [CSS, naming conventions, and preprocessors solve different problems](#css-naming-conventions-and-preprocessors-solve-different-problems)
-3. [Bootstrap and Material provide a starting design](#bootstrap-and-material-provide-a-starting-design)
-4. [Components provide a unit of reuse](#components-provide-a-unit-of-reuse)
-5. [Tailwind places presentation beside markup](#tailwind-places-presentation-beside-markup)
-6. [Local composition still needs shared decisions](#local-composition-still-needs-shared-decisions)
-7. [The costs of the pairing](#the-costs-of-the-pairing)
+1. [Plain CSS with BEM class names](#plain-css-with-bem-class-names)
+2. [Sass generates the CSS for you](#sass-generates-the-css-for-you)
+3. [Bootstrap and Angular Material](#bootstrap-and-angular-material)
+4. [Angular components keep the row in one place](#angular-components-keep-the-row-in-one-place)
+5. [Tailwind utility classes](#tailwind-utility-classes)
+6. [Define the shared palette once](#define-the-shared-palette-once)
+7. [A task row built from utilities](#a-task-row-built-from-utilities)
+8. [What the pairing costs](#what-the-pairing-costs)
+9. [Where each styling change goes](#where-each-styling-change-goes)
 
-## Start with the work, not the syntax
+## Plain CSS with BEM class names
 
-Consider these changes to the task interface:
-
-- Give every task row more breathing room.
-- Distinguish a completed task without making its title unreadable.
-- Reuse the row without copying its interaction and styling independently.
-- Support both dark and light presentation consistently.
-
-For each change, ask:
-
-1. Where is the implementation?
-2. Which relationship needs to be understood before changing it?
-3. What else intentionally changes with it?
-4. What stays consistent because it shares the same implementation or value?
-
-**Locality** means keeping related decisions close enough to understand and change them together. It does not mean that everything belongs in one enormous file, or that the application should have no shared configuration.
-
-A row component can own the row's structure, checkbox interaction, and presentation. A shared theme can own colors. The task board can still own which tasks exist and whether they are complete. These are different kinds of ownership.
-
-Keep behavior and presentation connected without confusing them:
-
-```text
-board owns task data
-        ↓
-row receives a task
-        ├──→ checkbox shows done or active
-        └──→ title receives the corresponding presentation
-        ↑
-row reports the user's choice to the board
-```
-
-Changing the text color does not make the task complete. The data and the checkbox's checked state express completion; the styling is an additional visible result.
-
-## CSS, naming conventions, and preprocessors solve different problems
-
-### Ordinary CSS gives direct control
-
-A class name connects an element to matching CSS rules. Here is a rendered snapshot of one completed row inside the task list:
+A class name connects an element to the CSS rules that mention that class. Here's one completed row from the task list, as rendered HTML:
 
 ```html
 <li>
@@ -78,7 +45,7 @@ A class name connects an element to matching CSS rules. Here is a rendered snaps
 </li>
 ```
 
-Ordinary CSS can style it directly:
+And here's a stylesheet for it:
 
 ```css
 .task-row {
@@ -116,35 +83,33 @@ Ordinary CSS can style it directly:
 }
 ```
 
-The browser matches the row, checkbox, and title classes to their rules. The final title rule requires both a completed ancestor and the title class. It expresses the relationship between the state class and that part of the row.
+Notice the fourth rule. A space between two selectors means "inside", so `.task-row--completed .task-row__title` matches a title that sits inside a completed row. That's how the completed state reaches the title: the state class goes on the row, and the rule connects it to the title.
 
-Several rules can match the same element and supply different values for one property. The browser resolves those competing declarations through a set of priority rules called the **cascade**.
+Both the third and the fourth rule match a completed title. When two rules set the same property on the same element, the browser has to pick one, and the set of rules it uses to pick is called the **cascade**. One of those rules is specificity: a selector with two classes beats a selector with one, wherever each sits in the file. So if `.task-row__title` also set a `color`, the completed rule's gray would still win on completed titles.
 
-The checkbox is a native control, and its enclosing label names it. The title can wrap rather than forcing the row wider than its container. Completion does not remove the title or rely only on color.
+The completed title keeps its text and gets a line through it, so completion doesn't rely on color alone. The title can also wrap (`overflow-wrap: anywhere`) instead of pushing the row wider than the list.
 
-This is only a presentation snapshot. The `checked` attribute supplies the checkbox's initial state; the class does not stay synchronized with future interaction by itself. In the task board, rendering must derive both the checked property and completed presentation from task data, just as part 1 derived the count.
+This is a snapshot. In the real board, code has to keep the `task-row--completed` class in step with the task's `done` value, the same way part 1 kept the remaining count in step with the tasks.
 
-To change spacing, edit `gap` and `padding`. To change the completed presentation, edit the corresponding rule. There is nothing inadequate about CSS being used this way.
+The class names follow **BEM**, short for Block, Element, Modifier:
 
-### BEM makes names informative
+- `task-row` is the block: a piece of the interface that makes sense on its own.
+- `task-row__title` is an element: a part of that block. Here "element" is a BEM naming role, so it doesn't mean an HTML element.
+- `task-row--completed` is a modifier: a variation or state of the block.
 
-The names above use the two-dashes form of **BEM: Block, Element, Modifier**:
+So where do you go for the three changes?
 
-- `task-row` identifies the independently meaningful piece, called the block.
-- `task-row__title` identifies a part of that piece, called an element in BEM terminology. This is a naming role, not a different kind of DOM element.
-- `task-row--completed` identifies a variation or state, called a modifier.
+- **More breathing room:** open the stylesheet, find `.task-row`, and edit `gap` and `padding`. Every element with that class changes. To know what else changes, you search the HTML for `task-row` and hope nobody reused the class for something else.
+- **Completed look:** edit the fourth rule. The class that turns it on lives in the markup, so the condition and the presentation sit in different files.
+- **Light theme:** the colors are repeated hex values, so you either hunt for each one or replace them with shared CSS variables first.
 
-The convention gives a teammate useful clues about ownership and relationships. BEM also has other naming forms; the two-dashes spelling is not the only one.
+BEM names make that search easier, because `task-row__title` tells you where the element belongs. But the browser doesn't enforce the convention. A rule such as `.sidebar span { color: red; }` in some other file still reaches the title if the row ends up inside a sidebar.
 
-A naming convention does not create browser-enforced isolation. A matching global rule can still affect the element. Nor does the convention keep markup, state classes, and stylesheet rules synchronized automatically.
+## Sass generates the CSS for you
 
-Those names can be useful, but each custom name adds a connection to maintain between markup and stylesheet rules. When a component already identifies the interface piece, utilities can avoid many additional names for its presentation.
+A **preprocessor** is a program that runs before your site is served and turns another language into plain CSS. Browsers only read CSS, so the preprocessor's output is what they actually get. **Sass** is the most common one, and **SCSS** is its CSS-like syntax, usually saved in `.scss` files.
 
-### Sass reduces repetitive authoring
-
-Browsers consume CSS, not Sass source. **Sass** is a tool that transforms an extended authoring language into CSS. **SCSS** is its CSS-like syntax, usually saved in `.scss` files.
-
-For example, two spacing variants need nearly identical rules. Instead of repeating those rules, the Sass source can define two name/value pairs and instruct the tool to emit one padding rule for each pair:
+Say the row needs two spacing variants. Instead of writing two nearly identical rules, the Sass source can list the variants once and generate a rule for each:
 
 ```scss
 $densities: (
@@ -159,7 +124,7 @@ $densities: (
 }
 ```
 
-The map associates each name with a value. `@each` repeats the block for each pair. `#{$name}` inserts the name into the selector during compilation. The resulting CSS is ordinary rules:
+`$densities` is a map that pairs each name with a value. `@each` repeats the block once per pair, and `#{$name}` inserts the name into the selector. The output is ordinary CSS:
 
 ```css
 .task-row--compact {
@@ -171,19 +136,15 @@ The map associates each name with a value. `@each` repeats the block for each pa
 }
 ```
 
-Sass also offers modules for organizing stylesheet code, and mixins for named, reusable groups of declarations. Those can be useful when authoring a larger styling system or customizing a library's Sass source.
+So Sass saves typing. It doesn't change how the browser applies styles, because by the time the browser sees anything, it's plain CSS with the same selectors and the same cascade. For the three changes, you go to the same place as before, and the same things change.
 
-That is an authoring benefit. It does not decide which task is complete, encapsulate an interactive row, or maintain the relationship between a class in a template and its rule.
+Modern CSS has also caught up on two of Sass's classic reasons to exist: custom properties share values such as colors, and nesting groups related selectors. So reach for Sass when you need its extra features, such as loops and mixins, rather than by default.
 
-Modern CSS also has custom properties and nesting. Sass is not required merely to share a color or nest a selector. Its additional authoring features should solve an actual problem rather than be added automatically.
+## Bootstrap and Angular Material
 
-These approaches can coexist: BEM is a convention, Sass is an authoring tool, and CSS is what the browser applies. They are not three generations of the same thing.
+A UI library hands you a finished set of design decisions, so you don't design every control from scratch.
 
-## Bootstrap and Material provide a starting design
-
-A UI library can provide a useful collection of established decisions instead of requiring every control to be designed from scratch.
-
-With Bootstrap 5.3, a task row can combine supplied form styling and layout utilities:
+With Bootstrap 5.3, a task row can use Bootstrap's own classes:
 
 ```html
 <li class="list-group-item bg-body-tertiary text-body">
@@ -194,80 +155,45 @@ With Bootstrap 5.3, a task row can combine supplied form styling and layout util
 </li>
 ```
 
-This assumes Bootstrap's stylesheet is loaded and the row belongs to a list with `class="list-group"`. For its dark color mode, Bootstrap 5.3 accepts `data-bs-theme="dark"` on the document's `<html>` element. The body and tertiary-surface utilities then use the corresponding shared color values.
+This assumes Bootstrap's stylesheet is loaded and the row sits in a list with `class="list-group"`. For dark mode, Bootstrap 5.3 reads `data-bs-theme="dark"` on the `<html>` element, and classes such as `bg-body-tertiary` switch to their dark colors.
 
-The checkbox here is still a native input. Bootstrap supplies its appearance; other Bootstrap components may also need JavaScript for their interaction.
+Angular Material goes further. It ships Angular components that implement controls and their interaction, styled to follow Google's Material Design. You customize it through its theming API, which sets colors, typography, and density (the spacing inside components) for every Material component at once. The [theming guide](https://material.angular.dev/guide/theming) shows the setup.
 
-Angular Material goes further than a set of CSS classes: its Angular components implement controls and associated interaction behavior. Their design follows Material conventions, and their theming APIs support substantial customization.
+So where do you go?
 
-For example, this theme uses Material's supported Sass API rather than reaching into a component's internal elements:
+- **More breathing room** and **light theme:** you change a setting the library supports, such as a Bootstrap Sass variable or CSS variable, or a Material theme value. That's normal use, and it changes every control that reads the setting.
+- **Completed look:** easy if the library has a class for it, like Bootstrap's `text-decoration-line-through`.
 
-```scss
-@use "@angular/material" as mat;
+The trouble starts when your design doesn't match the library's. With Tailwind, covered below, you start from a blank page and build the look your designer drew. With a library you start from its look and adjust it. If your design is close, that's a head start. If it's far off, you spend your time overriding the library's styles. Angular Material's documentation calls its components' internal HTML structure and CSS classes private implementation details, so a selector that reaches into them can break when you update the library.
 
-html {
-  color-scheme: dark;
-  @include mat.theme(
-    (
-      color: mat.$azure-palette,
-      typography: system-ui,
-      density: 0,
-    )
-  );
-}
+Bootstrap also has **utility classes**: classes that each do one small styling job, such as `d-flex`, which sets `display: flex`, and `gap-3`, which sets the space between flex items. So styling an element by putting small classes on it isn't unique to Tailwind.
 
-body {
-  background: var(--mat-sys-surface);
-  color: var(--mat-sys-on-surface);
-}
-```
+## Angular components keep the row in one place
 
-This is the current `mat.theme` API, checked with Angular Material 22.2.1. It supplies color, typography, and density values for Material components. Density controls spacing within supported controls. The body rules use the generated surface and text values for the surrounding page too.
+All the approaches so far share styles. A shared CSS class gives every row the same declarations, but each list still has its own copy of the row's HTML, its checkbox label, and its event handling. Change one copy and the others drift.
 
-The theme's color variables can contain CSS `light-dark(...)` values. That function holds two color choices: one for light mode and one for dark mode. The `color-scheme` property selects which choice applies; changing it to `light` selects the light presentation. A theme is not a task model or an automatic preference-saving system.
-
-### Supported customization is different from fighting internals
-
-Bootstrap exposes Sass settings and CSS variables. Angular Material exposes theme and component-token overrides. Changing a supported value through those APIs is normal use, not evidence that a library is difficult to customize.
-
-The friction appears when the desired presentation does not fit the supplied structure or supported choices. The available options are to accept the library's conventions, find a supported extension, implement that part separately, or override details the library does not promise to keep stable.
-
-Angular Material explicitly treats its component DOM structure and internal CSS classes as private implementation details. Targeting them with deep selectors creates a maintenance relationship with something the library may change. That is different from using its documented theme APIs.
-
-Direct composition starts with the desired presentation rather than a supplied visual system that needs adjusting. That can reduce customization work when the designs differ substantially; it does not mean library-based interfaces must look generic.
-
-There is also an important overlap: **Bootstrap has utilities**, so composition beside markup is not unique to Tailwind. Library controls can also be used inside application components. A library can be a useful starting point when its controls and design assumptions fit the product.
-
-## Components provide a unit of reuse
-
-Sharing a CSS rule shares declarations. It does not, by itself, share the row's HTML, accessible label, event handling, or relationship to task data.
-
-A component gives those related pieces one implementation and a clear usage boundary. Instead of copying a checkbox, title, spacing classes, and event hookup into every list, each list renders instances of the same task row.
-
-In this example, the boundary is simple:
+An Angular **component** puts all of that in one place. The board renders a `<task-row>` for each task, and every one of them comes from the same implementation:
 
 ```text
 TaskBoard
-  owns tasks, filtering, and the remaining count
-       ↓ passes a task
+  keeps the tasks, the filter, and the remaining count
+       ↓ passes one task
 TaskRow
-  owns the row's markup and presentation
-       ↑ reports a requested done value
+  renders the checkbox and title, with their styles
+       ↑ reports the new done value
 TaskBoard
-  applies that change to its task data
+  updates its task list
 ```
 
-The row does not become the owner of the task collection just because it displays one task. Reuse and state ownership are separate decisions.
+The row only displays the task it receives. The list of tasks still lives in the board, and the board decides what happens when a checkbox changes.
 
-This also gives a change a predictable reach. Editing the shared row implementation changes its instances intentionally. If one context genuinely needs a different presentation, give that need an explicit variant rather than hoping a distant selector changes the right instance.
+This gives every change a predictable reach. Edit the row component, and all its instances change, which is the point. If one screen really needs a different row, give the component an explicit variant instead of overriding it from a distant stylesheet.
 
-Do not extract a generic styling abstraction merely because two elements both have padding and a border. A task row is a meaningful product concept. An all-purpose “styled container” with many unrelated options may not be.
+Make components for things your product has names for, like a task row. A generic "box with padding and a border" component with a dozen options tends to become harder to change than the CSS it replaced.
 
-### Components do not require Tailwind
+### Component styles stay with the component
 
-Angular can keep CSS in a component's `styles` or a file referenced by `styleUrl`. It can keep markup inline or in a file referenced by `templateUrl`. Those files can be adjacent, so ordinary component CSS can also be local.
-
-Consider this small, independent example of a component that displays a task title. It demonstrates style scoping; it is not an extra component required by the task board below:
+Components don't need Tailwind to keep styles local. An Angular component can carry its own CSS in `styles`, or in a file next to it referenced by `styleUrl`. Here's a tiny component, separate from the task board, that shows what Angular does with that CSS:
 
 ```ts
 import { Component } from "@angular/core";
@@ -284,13 +210,13 @@ import { Component } from "@angular/core";
 export class TaskTitle {}
 ```
 
-A global `.title` rule could match any element with that class. Angular changes this component rule's reach without requiring a longer class name:
+A global `.title` rule would match every element with that class anywhere on the page. Angular narrows this one without a longer class name:
 
-1. It adds a generated attribute to elements created from the component's template. The `title` class stays unchanged.
-2. It rewrites the component's CSS selector to require that same attribute.
-3. The browser applies the resulting ordinary CSS rule only when both the class and the attribute match.
+1. It adds a generated attribute to every element in the component's template. The `title` class stays as it is.
+2. It rewrites the component's CSS selector to require that attribute too.
+3. The browser applies the rule only to elements that have both the class and the attribute.
 
-The rendered markup has this shape:
+The rendered markup looks roughly like this, with `example` standing in for the identifier Angular generates:
 
 ```html
 <task-title _nghost-example>
@@ -298,7 +224,7 @@ The rendered markup has this shape:
 </task-title>
 ```
 
-The component's rule has this shape:
+And the rule becomes:
 
 ```css
 .title[_ngcontent-example] {
@@ -306,51 +232,34 @@ The component's rule has this shape:
 }
 ```
 
-Here, `example` stands in for Angular's generated identifier; these are simplified illustrations, not exact output to copy. The content attribute marks template elements. The host attribute marks the component's own `<task-title>` element and lets Angular transform component rules using `:host`. The generated names are implementation details, not selectors to maintain by hand.
+In CSS, `[x]` means "has an attribute named x". So this rule matches elements with the `title` class *and* the `_ngcontent-example` attribute, and only this component's template elements have that attribute. (`_nghost-example` marks the component's own `<task-title>` element; you can ignore it here.) Angular calls this **emulated view encapsulation**, and it's the default.
 
-Another component can also use `class="title"`, but its template elements receive a different component marker. This rule does not match them merely because the class name is the same. Instances of the same component type share its marker; the marker is not an individual task's identity.
+The protection only works in one direction. The component's `.title` rule won't leak out to other components. But if someone writes `.title { color: red; }` in the global `styles.css`, it still hits this span, because the span still has `class="title"`.
 
-This selector transformation is Angular's default **emulated view encapsulation**: the framework provides a component-specific selector boundary using ordinary attributes and CSS.
+So with components, the answer to "where do you go?" becomes "the component file", and the change reaches every instance of that component. You get that **locality**, meaning the code you change sits next to the thing it affects, and that reuse from components, with or without Tailwind. What's left is everything inside the component: you still name classes, keep the CSS in step with the template, and repeat values such as `#52616c` across components unless you share them somehow. That's the part Tailwind changes.
 
-Browsers also offer a different mechanism: an internal DOM tree attached to an element, with its own stylesheet scope. That feature is called **Shadow DOM**. Angular's default mode does not create such a tree; the template elements remain in the ordinary DOM.
+## Tailwind utility classes
 
-### Similar goals, different scoping mechanisms
+Tailwind is built around utility classes. You style an element by putting several of them on it, each doing one job, such as setting padding or making the element a flex container. Tailwind scans your source files for the class names you use and generates CSS for those classes only.
 
-**CSS Modules** also make simple local names practical, but take a different route. Their tooling maps a local class name to a generated name, and importing the stylesheet into JavaScript exposes that mapping as an object. Code uses a value such as `styles.title` to put the mapped class name on the element. Angular's default mechanism keeps `class="title"` and changes selectors through attributes instead.
-
-**BEM** relies on a naming convention that makes ownership and variations recognizable. It does not automatically rewrite names or selectors. All three approaches can reduce naming conflicts, but only the tooling-based approaches establish the corresponding generated names or selector boundaries.
-
-The boundary is not complete style isolation. A global `.title` rule still matches Angular's internal span because the span retains that class. Global element rules, inherited values, and custom properties can also affect it. The usual cascade still decides between competing declarations. CSS Modules likewise do not create a native Shadow DOM boundary; global rules can still match elements through other selectors, and values can inherit.
-
-With Angular's default scoping, simple local classes such as `title` may be enough. BEM can still be useful for communicating structure or organizing shared global CSS, but it is not required merely to prevent two component-local `title` rules from matching each other's template elements.
-
-So “CSS requires distant stylesheets, Tailwind does not” would be an unfair comparison. Components already provide local styles, reuse, and—under Angular's default mode—selector scoping. Tailwind's additional role is utility composition and shared design values, not supplying that component boundary.
-
-## Tailwind places presentation beside markup
-
-A **utility class** expresses a focused styling operation. Tailwind generates CSS for the utilities found in the project's source. Those operations are composed on the elements that need them.
-
-For example:
+Here's the outside of a task row:
 
 ```html
-<label class="flex items-start gap-3 rounded-lg border border-line bg-surface p-3 text-foreground">
-  <!-- The row's control and title go here. -->
+<label class="flex items-start gap-3 rounded-lg border p-3">
+  <!-- The checkbox and title go here. -->
 </label>
 ```
 
-Here is the mechanism before treating the names as vocabulary:
+Each class maps to a small piece of CSS:
 
-- `flex` sets the element's `display` to `flex`.
-- `items-start` aligns its flex items at the start of the cross axis.
-- `gap-3` uses three spacing steps between those items.
-- `p-3` uses three spacing steps for padding.
-- `rounded-lg` uses the shared large-radius value.
-- `border` supplies a border width; `border-line` selects its color.
-- `bg-surface` and `text-foreground` use shared color roles defined below.
+- `flex` sets `display: flex`.
+- `items-start` sets `align-items: flex-start`, so the checkbox and the title line up at the top instead of stretching to the same height.
+- `gap-3` puts three spacing steps between the flex items.
+- `p-3` adds three spacing steps of padding.
+- `rounded-lg` uses Tailwind's large corner radius.
+- `border` adds a 1px border.
 
-With Tailwind's default spacing step of `0.25rem`, three steps are `0.75rem`. At a root font size of `16px`, that is `12px`. These are CSS relationships, not a new layout engine.
-
-Conceptually, the two spacing utilities apply rules like these:
+A spacing step is `0.25rem` by default, so three steps are `0.75rem`. At the browser's default root font size of `16px`, that's `12px`. Here's roughly what Tailwind generates for the two spacing classes:
 
 ```css
 .gap-3 {
@@ -362,61 +271,76 @@ Conceptually, the two spacing utilities apply rules like these:
 }
 ```
 
-The browser still lays out flex items, resolves `rem`, and applies the cascade. Tailwind helps generate and compose CSS; it does not replace those mechanisms.
+`--spacing` is a CSS variable that holds the spacing step. It's still plain CSS: the browser lays out the flex items, resolves `rem`, and runs the cascade exactly as it did for the BEM stylesheet. Tailwind writes that CSS for you from the class names.
 
-### One small change stays in the row
+Notice what's missing from the example: colors. The row needs a surface color, a text color, and a border color that all switch with the theme. Those come from a palette you define once.
 
-To increase both the gap and padding to four spacing steps, replace `gap-3` with `gap-4` and `p-3` with `p-4` in the row implementation. With the default spacing step, each becomes `1rem`.
+## Define the shared palette once
 
-This change needs no new selector, search for an existing selector's definition, or override tied to an ancestor. When the row is a component, its other instances use the changed composition too.
+To set up Tailwind in an Angular project, follow the [Tailwind installation guide for Angular](https://tailwindcss.com/docs/installation/framework-guides/angular). It adds the packages and an `@import "tailwindcss";` line to your global stylesheet, usually `src/styles.css`.
 
-The benefit here is fewer naming and navigation decisions during ordinary changes, not a guarantee that every change is faster.
+Before the palette itself, two CSS terms. A **custom property** is a CSS variable: a name starting with `--` that holds a value, read back with `var(...)`. Custom properties are inherited, so a value set on the root `<html>` element is available to every element inside it. A **design token** is a named design decision, such as `--color-surface: #181d21`. Code uses the name, so changing the value in one place changes it everywhere the name is used.
 
-Do **replace** conflicting utilities. Keeping both `p-3` and `p-4` and moving one to the end of the HTML class list does not make that final word win. The CSS cascade and generated rule order decide which declarations apply, not the order of class names in the attribute.
+Tailwind's `@theme` block turns tokens into utilities. A variable named `--color-surface` makes classes such as `bg-surface`, `text-surface`, and `border-surface` available, and each of them reads `var(--color-surface)`.
 
-### Data attributes can provide state and part hooks
+Here's the complete `styles.css`:
 
-The BEM example uses `task-row--completed` to mark state and `task-row__title` to identify a part. Custom HTML attributes can provide those hooks too: `data-state="completed"` records a state value on the row, while `data-slot="title"` names a part. Their names and values are application conventions, not built-in browser behavior.
+```css
+@import "tailwindcss";
 
-CSS can match those attributes with selectors such as `[data-state="completed"]` or `[data-slot="title"]`. A **hook** is simply a name that styling or other application code can target. Data attributes are not specific to Tailwind; ordinary CSS can use them instead of, or alongside, BEM classes.
+@theme {
+  --color-page: #111417;
+  --color-surface: #181d21;
+  --color-foreground: #f3efe8;
+  --color-muted: #b8b0a5;
+  --color-line: #52616c;
+  --color-accent: #ff9b6d;
+  --color-accent-strong: #ffb38d;
+}
 
-Tailwind can generate the conditional selectors while keeping the styling operations beside the element. Here is the same completed-row snapshot, using the shared colors defined later:
+:root {
+  color-scheme: dark;
+}
 
-```html
-<li>
-  <label
-    data-state="completed"
-    class="group flex items-start gap-3 rounded-lg border border-line bg-surface p-3 text-foreground"
-  >
-    <input class="mt-1 size-4 shrink-0 accent-accent" type="checkbox" checked />
-    <span
-      data-slot="title"
-      class="min-w-0 break-words group-data-[state=completed]:line-through group-data-[state=completed]:text-muted"
-    >
-      Read the DOM article
-    </span>
-  </label>
-</li>
+:root[data-theme="light"] {
+  --color-page: #f4efe8;
+  --color-surface: #fbf7f2;
+  --color-foreground: #201916;
+  --color-muted: #66564d;
+  --color-line: #8a7568;
+  --color-accent: #a34d2d;
+  --color-accent-strong: #7e3417;
+  color-scheme: light;
+}
 ```
 
-Follow the relationship:
+The `@theme` values are the dark palette, which is the default. The second rule replaces the same variables when the `<html>` element has `data-theme="light"`. `color-scheme` tells the browser which scheme its native controls, such as the checkbox and the select, should use.
 
-1. `group` marks the label as an ancestor whose state descendant utilities can inspect.
-2. `group-data-[state=completed]:line-through` applies the title's text decoration when that ancestor has `data-state="completed"`.
-3. `group-data-[state=completed]:text-muted` applies the completed color under the same condition.
-4. Changing the attribute to `data-state="active"` makes those conditions stop matching. The utility names stay unchanged.
+In `src/index.html`, put `data-theme="dark"` on `<html>` and `class="bg-page font-sans text-foreground"` on `<body>`. Keep the `<task-board></task-board>` element from part 1.
 
-The prefix before `:` is a **variant**: a condition for applying the utility after it. For a condition on the styled element itself, `data-[state=completed]:line-through` checks that element's own attribute instead of an ancestor's.
+Now follow one color from a class to its value:
 
-The optional `data-slot="title"` offers a named part hook comparable to the BEM element class. It is not required by the utilities in this example, which are attached directly to the title. Neither part names nor state attributes create style isolation.
+```text
+bg-surface on the row
+        ↓
+generated rule: background-color: var(--color-surface)
+        ↓
+--color-surface inherited from <html>
+        ↓
+#181d21 when dark, #fbf7f2 when light
+```
 
-This replaces a handwritten modifier-to-title rule with generated conditional utilities; it does not remove the relationship between state and presentation. Rendering still has to derive the attribute and the checkbox's checked property from the same task data. Changing a data attribute alone does not change the checkbox's checked property or its accessible checked state. The component below selects a class list instead; data hooks are an alternative, not an additional source of task state.
+So switching `data-theme` on `<html>` to `light` changes every row's background, border, text, and focus outline, without touching a single class list. Deciding how the user picks a theme, and whether that choice is saved, is a separate job; this example simply defaults to dark.
 
-### A reusable Angular row
+Tailwind also has a `dark:` prefix, as in `bg-white dark:bg-gray-900`, which writes both colors on every element. Named color roles like `surface` keep that pair in one place instead. Either works with Tailwind; this article uses the color roles.
 
-Here is a concrete replacement for the repeated row markup in part 1. These examples use Angular 22.2.1 and Tailwind CSS 4.3.3.
+A name like `muted` doesn't check contrast for you, so test that text stays readable and focus outlines stay visible in both themes.
 
-Move the task interface from `TaskBoard` into `task.ts`, exporting it so the board and row share the same type:
+## A task row built from utilities
+
+Now put the utilities and the palette together in a row component.
+
+First, move the `Task` interface out of `TaskBoard` into its own file, `task.ts`, so the board and the row share it:
 
 ```ts
 export interface Task {
@@ -426,9 +350,9 @@ export interface Task {
 }
 ```
 
-In Angular, an **input** supplies data to a component. An **output** reports a custom event to its consumer. Here, the input supplies a task; the output reports the checked choice back to the board. The row reads the task, rather than mutating an object owned by its parent.
+The row needs two connections to the board. An **input** passes data into a component, so the board can hand the row a task. An **output** lets a component emit its own event, so the row can tell the board the checkbox changed. The row never changes the task itself; it reports the choice and the board updates its list.
 
-Save this component in `task-row.ts`:
+Save this as `task-row.ts`:
 
 ```ts
 import { Component, computed, input, output } from "@angular/core";
@@ -467,19 +391,54 @@ export class TaskRow {
 }
 ```
 
-The required input makes a missing task a template-compilation error. Calling `task()` reads the supplied task. When the checkbox changes, `doneChange.emit(...)` reports a boolean choice. The parent decides how to apply it.
+Here's what to notice:
 
-The span retains its static wrapping utilities, while Angular's `[class]` binding adds or removes the completed-state classes. `computed` derives that class list from the supplied task. The full names `line-through` and `text-muted` exist literally in source, so Tailwind can detect them.
+- `input.required<Task>()` means the board must pass a task. Forgetting it is a compile error. Calling `task()` reads the current task.
+- When the checkbox changes, `doneChange.emit(checkbox.checked)` sends `true` or `false` to the board.
+- The label now uses the palette: `border-line`, `bg-surface`, and `text-foreground`.
+- The span always has `min-w-0 break-words`, so long titles wrap. Angular's `[class]` binding adds `line-through text-muted` when the task is done. `computed` recalculates that class list whenever `task()` changes.
+- `focus-visible:outline-2` uses a **variant**: the part before `:` is a condition, and the utility after it applies only when the condition holds. Here the outline appears only when the checkbox has keyboard focus.
+- `accent-accent` looks odd, but it's two names: `accent-` is the utility for the CSS `accent-color` property, and `accent` is the palette color. It colors the native checkbox, which still provides its own keyboard support.
+- `host: { class: "block" }` puts `block` on the `<task-row>` element itself. That element is still in the page and takes part in layout, so it needs a display value like any other element.
 
-The `host` entry puts `block` on the component's own `<task-row>` element. That element participates in layout too; a component boundary does not remove its host from the DOM.
+### Make the three changes
 
-`accent-accent` looks repetitive because the first part names the CSS `accent-color` utility and the second names the shared color role. It colors the native checkbox. It does not turn a drawn square into a checkbox or provide keyboard interaction—the native input already does that.
+Now answer the opening question for this row.
 
-### Use the row through its consumer
+**More breathing room:** open `task-row.ts` and change `gap-3` to `gap-4` and `p-3` to `p-4`. Each becomes `1rem`. You didn't search for a selector, check who else uses a class, or add an override. Every row on the board changes, because they all come from this component, and nothing else changes, because these classes sit on this component's elements only.
 
-In `TaskBoard`, import `Task` from `./task` instead of declaring the interface there. Import `TaskRow` from `./task-row` and add `imports: [TaskRow]` to the existing `@Component` metadata.
+Replace the old class rather than adding the new one. If the list contains both `p-3` and `p-4`, putting `p-4` last doesn't make it win. The browser ignores the order of names in the `class` attribute; the order of the generated rules in the stylesheet decides, and you don't control that from the template.
 
-Keep the board's signals, derived values, and methods from part 1. Replace its template with this one:
+**Completed look:** the condition and its presentation sit together in `completedClasses`. To change how a completed task looks, you edit that one string.
+
+Keep each class name written out in full. Tailwind finds classes by reading your source files as plain text, so it sees `"line-through text-muted"` and generates both. It never runs your code, so something like `"text-" + colorName` produces no CSS. Tailwind also skips files listed in `.gitignore`, so classes written only in ignored files won't be generated either.
+
+**Light theme:** already done, through the palette. The row doesn't need a second set of classes.
+
+### Use the row in the board
+
+In `task-board.ts`, delete the `Task` interface and import it from `./task` instead. Import `TaskRow` from `./task-row` and add `imports: [TaskRow]` to the `@Component` metadata. Keep the board's signals, computed values, and methods from part 1.
+
+In the template, the repeated row markup becomes one element:
+
+```html
+<ul id="task-list" class="space-y-2" role="list">
+  @for (task of visibleTasks(); track task.id) {
+    <li>
+      <task-row [task]="task" (doneChange)="setDone(task, $event, filterSelect)"></task-row>
+    </li>
+  }
+</ul>
+```
+
+`$event` holds whatever the output emitted. Because the row emits a boolean, `$event` here is `true` or `false`, the same value the old template passed as `checkbox.checked`. So `setDone` works unchanged: it replaces the task, the count updates, and focus moves to the filter if the row disappears.
+
+`space-y-2` adds space between the list items. `role="list"` stays on the `<ul>` for a reason covered under [What the pairing costs](#what-the-pairing-costs).
+
+The rest of the board template gets utility classes the same way:
+
+<details>
+<summary>Full board template</summary>
 
 ```html
 <main class="mx-auto max-w-2xl px-4 py-8">
@@ -522,9 +481,9 @@ Keep the board's signals, derived values, and methods from part 1. Replace its t
   <p id="remaining-count" class="my-4" aria-live="polite">Remaining tasks: {{ remaining() }}</p>
   <ul id="task-list" class="space-y-2" role="list">
     @for (task of visibleTasks(); track task.id) {
-    <li>
-      <task-row [task]="task" (doneChange)="setDone(task, $event, filterSelect)"></task-row>
-    </li>
+      <li>
+        <task-row [task]="task" (doneChange)="setDone(task, $event, filterSelect)"></task-row>
+      </li>
     }
   </ul>
   <p id="empty-message" class="text-muted" [hidden]="visibleTasks().length > 0">
@@ -533,159 +492,82 @@ Keep the board's signals, derived values, and methods from part 1. Replace its t
 </main>
 ```
 
-The input's `basis-48` supplies a preferred width of `12rem`, while `grow` lets it use spare space. Together with the wrapping parent, that avoids squeezing the field into a tiny sliver beside the button on narrow screens or at larger text sizes. `min-w-0` still allows it to shrink when its own line is narrower than that preferred width.
+On the title input, `basis-48` asks for a width of `12rem`, `grow` lets it take spare space, and `flex-wrap` on its parent moves the button to the next line when there isn't room for both.
 
-The row emits a boolean, so `$event` in `(doneChange)` is that boolean—not a native DOM `Event`. The board's existing `setDone` method still replaces the appropriate task, updates its derived count and visible collection, and moves focus if the affected row disappears.
+</details>
 
-The new composition changes presentation and introduces a row boundary; it does not replace the task rules with styling logic. Each repeated task uses the same row implementation, rather than copying that implementation into the board.
+The board's behavior hasn't changed. The task rules from part 1 still decide what happens; the template now gets its look from utilities, and each task's row comes from one component instead of markup repeated inline.
 
-For the CSS entry and document setup, use the next section. This is code for an Angular application configured to process Tailwind, not an instruction to paste `@theme` into a browser stylesheet unchanged. Follow the [current Angular installation guide](https://tailwindcss.com/docs/installation/framework-guides/angular) for that integration. Detailed input/output and content-composition design belongs to the next article.
+## What the pairing costs
 
-## Local composition still needs shared decisions
+### Templates get denser
 
-If every element picks unrelated colors and spacing, writing those choices beside markup does not make the result coherent.
+The row's class list is much longer than `class="task-row"`. The information that used to sit behind a name in a stylesheet is now on the element, and you still have to read it. Breaking attributes across lines helps, and so does moving a repeated piece into a component. Hiding every long class list behind a vague wrapper component just moves the information somewhere harder to find.
 
-A **design value** is a shared choice, such as the spacing step or a surface color. A **design token** gives that choice a name other code can use. The name makes it possible to use the same decision repeatedly and change it deliberately.
+### You learn a vocabulary and a tool
 
-CSS already provides a mechanism for sharing values. A custom property has a name beginning with `--`; `var(...)` reads its value. Custom properties normally inherit through the element tree, so a value on the document root can supply values to descendants.
+Your team has to learn how utility names map to CSS, how variants work, and how Tailwind finds class names in source files. A few details catch people out:
 
-Tailwind's `@theme` adds an authoring relationship: a color variable named `--color-surface` makes utilities such as `bg-surface` available. The generated CSS retains a custom property for the value.
+- The examples use Tailwind 4, which is configured in CSS with `@theme`. Older versions and many tutorials use a JavaScript config file instead.
+- Tailwind 4 targets modern browsers. Check its [compatibility page](https://tailwindcss.com/docs/compatibility) if you need to support older ones.
+- Tailwind 4 isn't designed to be used together with Sass, Less, or Stylus. If a project already uses Sass heavily, that's a migration cost.
+- `@import "tailwindcss"` includes **Preflight**, a set of base styles that resets browser defaults. For example, headings lose their default size and lists lose their bullets. That's why the board template sets its heading size explicitly, and why the list keeps `role="list"`: some browsers stop announcing a list to screen readers once its bullets are removed.
 
-### Define the shared palette once
+### Consistency still takes discipline
 
-Use this in the application's Tailwind CSS entry, such as `styles.css`:
+Using `p-3` and `gap-3` draws from the shared spacing scale, which makes reusing established values easy. It doesn't decide which spacing suits the task row; that's still a design decision.
 
-```css
-@import "tailwindcss";
+Tailwind also accepts one-off values in square brackets, such as `p-[13px]`. That's useful as an escape hatch, but it means installing Tailwind doesn't enforce consistency on its own. If one-off values keep appearing, the design needs a new shared value, and that's a conversation to have with the designer.
 
-@theme {
-  --color-page: #111417;
-  --color-surface: #181d21;
-  --color-foreground: #f3efe8;
-  --color-muted: #b8b0a5;
-  --color-line: #52616c;
-  --color-accent: #ff9b6d;
-  --color-accent-strong: #ffb38d;
-}
+### CSS knowledge is still required
 
-:root {
-  color-scheme: dark;
-}
+`flex`, `min-w-0`, and `break-words` only help if you understand the layout problem they solve. A class name won't tell you why a title overflows or why another rule wins. And utilities are global CSS rules from `styles.css`, so they reach every component's elements, the same as any other global rule.
 
-:root[data-theme="light"] {
-  --color-page: #f4efe8;
-  --color-surface: #fbf7f2;
-  --color-foreground: #201916;
-  --color-muted: #66564d;
-  --color-line: #8a7568;
-  --color-accent: #a34d2d;
-  --color-accent-strong: #7e3417;
-  color-scheme: light;
-}
-```
+### Accessibility comes from HTML and behavior
 
-In the host document, use `data-theme="dark"` on `<html>` and `class="bg-page font-sans text-foreground"` on `<body>`. Keep the `<task-board></task-board>` host used to bootstrap the board in part 1.
+Tailwind styles elements. The checkbox's keyboard support, its label, form validation, focus movement, and the live remaining count all come from the HTML and the behavior carried over from part 1. A custom control still needs its own behavior and accessibility work, or a control library that provides it. You can use Tailwind for presentation and a library for complex controls together.
 
-Now follow the color:
+### Plain CSS still has a place
 
-```text
-bg-surface in the row
-        ↓
-generated background-color rule
-        ↓
-var(--color-surface)
-        ↓
-current value inherited from the root
-```
+A named animation, a complicated selector, or a rule that's simply clearer as CSS can live in a stylesheet. Utilities can be the default without being the only tool.
 
-Changing the root's `data-theme` to `light` changes those inherited values. The component does not need a second copy of its markup or a separate color decision for each row. `color-scheme` also tells the browser which scheme to use for native controls.
+## Where each styling change goes
 
-Tailwind has a `dark:` variant too. Here, named color roles carry the theme change instead of repeating light/dark color pairs across every element. That is a choice within Tailwind, not a requirement of utility styling. The application still needs to decide how a user selects a mode and whether that preference is saved; this example defaults to dark mode.
+Back to the opening question: when you need to change how something looks, where do you go, and what else changes with it?
 
-The same theme change covers regular titles, completed titles, borders, focus indicators, and the input surface. Readability and focus still need checking in both modes; naming a color `muted` does not guarantee sufficient contrast.
+| Approach                 | Where you go                            | What else changes                                      |
+| ------------------------ | --------------------------------------- | ------------------------------------------------------ |
+| Plain CSS with BEM       | A shared stylesheet                     | Anything using the class, which you find by searching  |
+| Sass                     | The Sass source for that stylesheet     | The same as plain CSS                                  |
+| Bootstrap or Material    | A supported setting or theme value      | Every control that reads it                            |
+| Angular component styles | The component file                      | Every instance of that component                       |
+| Component with Tailwind  | The element in the component's template | Every instance of that component                       |
+| Shared Tailwind palette  | One block in `styles.css`               | Every element that uses that color                     |
 
-### Shared values are guidance, not automatic design quality
+Components give you the "one place" and the predictable reach. Tailwind adds the rest:
 
-Using `p-3`, `p-4`, and `gap-3` draws from the spacing scale. It makes reusing established values easy. It does not decide which spacing is appropriate for the task.
+- **Locality:** the structure and its presentation are on the same lines of the same file.
+- **Component-based reuse:** the task row shares its markup, its label, the event it emits, and its look, not just a CSS rule.
+- **Less selector management:** no class names to invent, no selectors to search for, no overrides tied to an ancestor.
+- **Consistent design values:** spacing comes from one scale and colors from one palette, so the light theme was a single block of CSS.
+- **Visual control:** you build the design you were given instead of reshaping a library's design.
+- **Faster iteration:** the breathing-room change was two class names in one file.
 
-The board's `font-sans` also uses a shared font stack, while `text-3xl` selects a value from the type scale. Color is not the only shared decision: spacing and typography need deliberate choices too.
-
-Tailwind also allows arbitrary values, such as `p-[13px]`. That escape hatch can be useful, but it means consistency is not enforced merely by installing the tool. Repeated one-off choices should prompt a design discussion, not a larger pile of utility names.
-
-A shared token change intentionally affects all consumers. A component edit intentionally affects that component's instances. Locality does not mean that no change can have wider consequences; it means that those relationships have understandable owners.
-
-### Dynamic state does not mean dynamically inventing class names
-
-The completed-state method selects a complete literal class list. Avoid constructing utility names from fragments such as `"text-" + colorName` and expecting Tailwind to evaluate that JavaScript during its build.
-
-Tailwind scans source text for complete candidate names; it does not execute application logic to discover them. Source files also have to be included in the scan. Dependency packages and ignored files are not automatically treated like application source.
-
-If a component variant selects different compositions, keep its possible class names literal and findable in the configured source. That is a build relationship to maintain, even though there are fewer handwritten selectors.
-
-## The costs of the pairing
-
-### Templates become denser
-
-The row's class list is longer than `class="task-row"`. The information is present instead of hidden behind a name, but it is still information that must be read.
-
-Breaking attributes across lines helps. Moving a meaningful repeated row into a component helps. Replacing every long class list with a vague wrapper can merely hide the information again.
-
-### Vocabulary and tooling are real dependencies
-
-A teammate must learn how utility names map to CSS, how state and responsive variants work, and how the build finds source files. The examples here use Tailwind 4's CSS-based theme configuration; older versions and tutorials may use a different setup. Tailwind 4 also targets modern browsers, so check its compatibility requirements if a project needs older browser support.
-
-Tailwind 4 is itself a CSS build tool and is not designed to use Sass as a preprocessor for the same stylesheet. The Material theme example is Sass; the Tailwind entry is CSS. The fact that approaches address overlapping concerns does not make every build-pipeline combination interchangeable.
-
-Tailwind's import also includes **Preflight**, a shared set of base CSS resets. Those affect defaults for elements such as headings, controls, and lists. It is not only a bag of classes with no effect until used. The board template sets its heading and control presentation explicitly, and retains `role="list"` because removing list markers can affect how some browsers expose list semantics.
-
-### CSS knowledge remains necessary
-
-`flex`, `min-w-0`, and `break-words` are useful only with an understanding of the layout problem they address. A utility cannot explain why the available width is small or why another declaration wins.
-
-The classes are not private to the component. They refer to shared CSS rules. These examples use Angular's default emulated style mode, where that global utility stylesheet reaches the rendered elements. A native Shadow DOM boundary requires styles to be available within its scope; it is not automatically styled by document-level utilities.
-
-### Tailwind does not supply accessible behavior
-
-It does not provide the checkbox's native semantics, label, keyboard activation, form validation, focus movement, or live count announcement. Those come from the HTML and behavior design carried over from part 1.
-
-A custom control still needs its own behavior and accessibility work, or an appropriate control library. Choosing Tailwind for presentation does not require implementing every complex control from scratch.
-
-### Ordinary CSS remains useful
-
-A named animation, a complex selector relationship, or a particularly clear component rule can be better expressed in CSS. There is no prize for spelling every possible declaration through a utility.
-
-Utility composition can be the default approach without excluding ordinary CSS where it is clearer.
-
-## How the pairing supports the six goals
-
-The examples connect the pairing to six concrete benefits:
-
-- **Locality:** read the structure and most of its presentation together.
-- **Component-based reuse:** share a task row as a product concept, including its interaction and semantics.
-- **Less selector management:** avoid creating names and relationships for every styling combination.
-- **Consistent design values:** use shared spacing and color decisions rather than unrelated numbers everywhere.
-- **Visual control:** compose the intended presentation without first adopting a different visual system.
-- **Faster iteration:** make ordinary changes with fewer naming and navigation decisions.
-
-The pairing is useful when these benefits outweigh denser templates and an additional vocabulary. Existing component CSS, library integrations, or product constraints may make a different combination a better fit.
-
-Components, scoping, naming conventions, preprocessing, UI libraries, and utility composition solve different problems. The useful question is which relationships a team needs to maintain—and which tools make that work clearer.
+You pay for it with denser templates, a vocabulary and a build tool to learn, and consistency that still depends on your team. If those costs outweigh the benefits, for example in a project built on Material or with a lot of working component CSS, a different combination fits better.
 
 ## Closing check
 
-1. Why does extracting a shared CSS class not necessarily replace a row component?
-2. How can Angular keep simple component-local classes such as `title` from matching another component's template, and why can global CSS still affect them?
-3. Why does changing `--color-surface` affect many rows without editing each class list?
-4. Why can `"text-" + colorName` fail to produce the expected utility CSS?
-5. Which parts of the checkbox interaction did Tailwind not provide?
+1. A designer wants more padding in every task row. With components and Tailwind, where do you make that change, and which elements does it affect?
+2. Why doesn't a shared CSS class replace a task row component?
+3. Why does switching `data-theme` to `light` restyle every row without editing any class list?
+4. Which parts of the task row's behavior and accessibility did Tailwind not provide?
 
 Check your reasoning:
 
-- A shared rule reuses declarations, not necessarily markup, event behavior, or an interface's usage boundary.
-- Angular's default mode adds component-specific attributes and requires them in component selectors. A global rule is not restricted by that generated marker. Component styles can also be inline or adjacent to markup, so locality and scoping are not benefits unique to Tailwind.
-- The utility reads a shared CSS custom property. Its consumers use the same current value, so a token change has an intentional shared reach.
-- The build scans source text for complete class names; it does not execute the expression to discover every possible result.
-- The native control, accessible label, parent-owned task updates, validation, focus management, and live count announcement remain separate responsibilities.
+- You change `p-3` to `p-4` in the row component's template. Every rendered task row changes, because they all come from that component, and nothing outside it does.
+- A shared class only shares CSS declarations. The component also shares the row's HTML, the checkbox's label, and the event that reports a change to the board.
+- Utilities such as `bg-surface` read CSS variables such as `--color-surface`. The light theme replaces those variables on `<html>`, and every element inherits the new values.
+- The native checkbox, its label, keyboard activation, the board's task updates, focus movement, and the live count announcement all come from HTML and the behavior from part 1.
 
 ## Sources and further reading
 
@@ -697,9 +579,7 @@ Check your reasoning:
 - [Angular: component styles and scoping](https://angular.dev/guide/components/styling)
 - [Angular: component inputs](https://angular.dev/guide/components/inputs)
 - [Angular: component outputs](https://angular.dev/guide/components/outputs)
-- [CSS Modules: local names and stylesheet imports (source)](https://raw.githubusercontent.com/css-modules/css-modules/c7bf6c02472fdce4dd8e569abc10d2aeb234e1c2/README.md)
 - [Tailwind: composing utility classes](https://tailwindcss.com/docs/styling-with-utility-classes)
-- [Tailwind: data-attribute variants](https://tailwindcss.com/docs/hover-focus-and-other-states#data-attributes)
 - [Tailwind: theme variables](https://tailwindcss.com/docs/theme)
 - [Tailwind: finding classes in source](https://tailwindcss.com/docs/detecting-classes-in-source-files)
 - [Tailwind: dark mode](https://tailwindcss.com/docs/dark-mode)

@@ -2,6 +2,7 @@
 title: "What happens when you click: HTML, the DOM, and browser behavior"
 description: "Follow a small task form from HTML to the live DOM, through event propagation and default actions, then rebuild the same interaction in Angular."
 pubDate: "2026-10-01"
+updatedDate: "2026-10-15"
 tags:
   - html
   - dom
@@ -10,33 +11,29 @@ tags:
   - frontend
 ---
 
-A form submits even though your click handler ran. A listener on the form logs a click that happened on a button. DevTools shows `value="Read the DOM"`, but the input displays something else.
+You add a click handler to a form's button. The handler runs, and then the whole page reloads anyway. A listener you put on the form fires when someone clicks the button inside it. DevTools shows the input with `value="Read the DOM"`, but the box on screen clearly says something else.
 
-These are not three unrelated browser quirks. They come from three separate parts of the platform:
+Each of these comes from a different layer of the browser: the HTML you wrote, the live objects the browser builds from it, and the events that travel through those objects. This article builds one small task form, first with plain HTML and JavaScript and then in Angular, and watches each layer at work. By the end, all three surprises have a plain explanation.
 
-- **HTML** describes elements, their meaning, and their initial configuration.
-- **The DOM** is the live object tree that JavaScript and the browser can change.
-- **Events** let application code respond to interactions. **Default actions** are what the browser normally does in response, such as following a link or submitting a form.
+You'll need to recognize HTML tags and basic JavaScript (variables, functions, objects) to follow along. The [article on rendering strategies](/dump/blog/html-rendering-methods/) explains where a page's HTML comes from; this one starts once that HTML reaches the browser. There's no backend: the tasks exist only while the page is open.
 
-When we say **native browser behavior**, we mean behavior built into the browser, not behavior supplied by Angular or our own JavaScript.
-
-We will use a small task form to connect those parts, first without a framework and then in Angular. No backend is involved; the tasks exist only while the page is open.
-
-The [article on rendering strategies](/dump/blog/html-rendering-methods/) explains where HTML comes from. This article starts once that HTML reaches the browser.
+The Angular example uses Angular 22.2. All the examples use ordinary nested elements; shadow DOM changes some of the event rules and isn't covered here.
 
 ## Contents
 
-1. [HTML describes meaning, not just appearance](#html-describes-meaning-not-just-appearance)
+1. [Start with a plain HTML form](#start-with-a-plain-html-form)
 2. [The browser builds a live object tree](#the-browser-builds-a-live-object-tree)
-3. [Events report something happening](#events-report-something-happening)
-4. [Events can travel through the tree](#events-can-travel-through-the-tree)
-5. [Propagation and default behavior are separate](#propagation-and-default-behavior-are-separate)
-6. [Angular uses the same browser foundation](#angular-uses-the-same-browser-foundation)
-7. [Predict the interaction](#predict-the-interaction)
+3. [Events report what happened](#events-report-what-happened)
+4. [Events travel down and back up the tree](#events-travel-down-and-back-up-the-tree)
+5. [Cancel the browser's default action](#cancel-the-browsers-default-action)
+6. [Let the list handle clicks on its rows](#let-the-list-handle-clicks-on-its-rows)
+7. [Stop an event from traveling further](#stop-an-event-from-traveling-further)
+8. [The same form in Angular](#the-same-form-in-angular)
+9. [Back to the three surprises](#back-to-the-three-surprises)
 
-## HTML describes meaning, not just appearance
+## Start with a plain HTML form
 
-Save this as `index.html` and open it in a browser:
+Make a new folder and save this as `index.html` inside it:
 
 ```html
 <!doctype html>
@@ -62,30 +59,52 @@ Save this as `index.html` and open it in a browser:
 </html>
 ```
 
-An **element** is a part of the document such as the form or input. Its **attributes** configure it: `type="text"`, `name="title"`, and `required` each have a different job. Elements can contain text and other elements. Here, the button contains a `span`, which contains the text “Add task.”
+Then serve the folder with a small local web server. From inside the folder, run:
 
-The choices are behavioral, not merely visual:
+```sh
+npx serve .
+```
 
-- A link with an `href` navigates to a destination.
-- A button performs an action and already supports keyboard activation.
-- A form groups controls and provides a submission mechanism.
-- A label names a control; matching `for` to the input's `id` associates them. Clicking this label focuses the input.
+`npx` comes with Node.js. The first time, it asks to download the `serve` package (answer `y`), then prints the address to open, usually `http://localhost:3000`. If you have Python instead, `python3 -m http.server 8000` does the same job at `http://localhost:8000`. Keep the server running while you work through the article. Later examples load a JavaScript module, and the browser won't load modules from a page opened straight from disk, so it's easiest to serve the page from the start.
 
-The input's `id` identifies it in the document. Its `name` is the key used when its value is included in form submission. Those are separate responsibilities.
+### Elements come with behavior
 
-Try submitting the form. Because there is no `action`, its destination is the current page. With `method="get"`, the browser puts the named control's value in the query string and navigates. Under ordinary HTTP serving, that means requesting this page again with something like `?title=Read+the+DOM`.
+An **element** is one part of the document, such as the form or the input. Its **attributes** configure it: `type="text"`, `name="title"`, and `required` each do a different job. Elements can contain text and other elements. Here, the button contains a `span`, which contains the text "Add task".
 
-The browser does **not** know that we intend to add a list item. We have not written that behavior yet.
+Picking an element picks a behavior, not just a look:
 
-If you clear the input first, `required` prevents ordinary submission and the browser provides validation feedback. Detailed validation is another topic; the important point here is that HTML already supplies behavior before JavaScript runs.
+- A link with an `href` takes you to another address when you activate it.
+- A button can receive keyboard focus, and Enter or Space presses it.
+- A form groups controls and knows how to send their values somewhere.
+- A label names a control. Matching the label's `for` to the input's `id` connects them, so clicking "Task title" focuses the input.
 
-A styled `<div>` would not inherit the button's semantics, focusability, or keyboard activation. Choosing the correct element gives us a useful starting contract instead of a collection of behaviors to recreate.
+The input has both an `id` and a `name`, and they're used by different things. `id` is how the page finds the element: the label's `for`, `querySelector` in JavaScript, and CSS selectors all use it. `name` is the key the browser uses when it sends the form's values. You can rename one without touching the other.
+
+Now click Add task and watch the address bar. With `npx serve`, it goes from
+
+```text
+http://localhost:3000/
+```
+
+to
+
+```text
+http://localhost:3000/?title=Read+the+DOM
+```
+
+The form has no `action` attribute, so the browser sends it to the current page. With `method="get"`, the browser puts each named control's value into the address after a `?`. That part is the **query string**: `title` is the input's `name`, `Read+the+DOM` is its value (a space becomes `+`), and the browser loads the page again at that address. (With Python, the same thing happens on port 8000.) The input shows its starting value again because the page itself was reloaded.
+
+Nothing here added a task to the list. The browser did what forms do by default: it submitted. Adding a list item is something you'll write yourself shortly.
+
+Clear the input and try again. This time the browser refuses to submit and shows a message next to the field, because of `required`. Validation has a lot more to it, but the point here is that HTML gives you working behavior before you've written any JavaScript.
+
+Build the same button out of a `<div>` and you lose all of it. A `<div>` doesn't take keyboard focus, Enter and Space don't press it, and clicking it doesn't submit the form. You'd have to write each of those yourself.
 
 ## The browser builds a live object tree
 
-HTML arrives as text. The browser reads the tags, attributes, and nesting, then builds a tree of JavaScript-accessible objects. That process is called **parsing**. The resulting objects follow the **Document Object Model**, or DOM.
+HTML arrives as text. The browser reads the tags, attributes, and nesting, and builds a tree of objects that JavaScript can read and change. That reading step is called **parsing**. The objects follow a standard called the **Document Object Model**, or **DOM**.
 
-A **node** is one object in that tree. The document itself, individual elements, and pieces of text are all nodes.
+A **node** is one object in that tree. The document itself, each element, and each piece of text are all nodes.
 
 ```mermaid
 flowchart LR
@@ -95,7 +114,7 @@ flowchart LR
     E[User interaction] -->|changes control state| C
 ```
 
-A simplified part of our tree looks like this:
+A simplified part of the tree looks like this:
 
 ```text
 document
@@ -113,23 +132,23 @@ document
          └─ ul
 ```
 
-The actual tree also contains the head, doctype, and whitespace text nodes omitted here.
+The real tree also contains the head, the doctype, and text nodes for the whitespace between tags.
 
-The form is the button's **parent**, the element directly containing it. The input and button are **siblings** because they share that parent. The span is a **child** of the button. The button, form, main, body, and html elements are the span's **ancestors**: follow its parents upward to find them.
+The form is the button's **parent**: the element directly around it. The input and the button are **siblings** because they share that parent. The span is a **child** of the button. The button, form, main, body, and html elements are the span's **ancestors**: start at the span and follow the parents upward to find them.
 
-Open your browser's developer tools, usually called **DevTools**, and find the Console tab. It lets you run JavaScript against the page. Change the heading:
+Open your browser's developer tools (**DevTools**, usually F12) and find the Console tab. It runs JavaScript against the page that's open. Change the heading:
 
 ```js
 document.querySelector("h1").textContent = "Tasks for today";
 ```
 
-`querySelector("h1")` finds the first `h1` element. A selector such as `"#task-title"` instead finds the element with that `id`. Setting `textContent` changes the element's text in the live tree. DevTools' Elements panel shows the result; the original file still contains “Task notes.”
+`querySelector("h1")` finds the first `h1` element. A selector such as `"#task-title"` finds the element whose `id` is `task-title`. Setting `textContent` replaces the element's text in the live tree, and the page updates.
 
-**Changing the DOM does not rewrite the downloaded HTML.** View Source or the document response shows the original markup; the Elements panel shows the current tree. The tree can also differ because the HTML parser repairs invalid nesting. We do not need parser internals to recognize that source text and live objects are different things.
+Your `index.html` still says "Task notes". The DOM is the browser's working copy of the page: View Source shows the HTML file as it was downloaded, and the Elements panel in DevTools shows the current tree. They can also differ when the browser repairs invalid nesting while parsing.
 
-### Attributes and properties are not interchangeable
+### Attributes and properties hold different state
 
-An HTML attribute appears in the markup, such as `value="Read the DOM"`. A JavaScript **property** is a value exposed by an object, read or written with syntax such as `input.value`. Similar names do not guarantee that an attribute and a property hold the same state.
+An **attribute** is written in the markup, such as `value="Read the DOM"`. A **property** is a value on the JavaScript object, read or written with syntax such as `input.value`. The names match, but for a text input they hold different things.
 
 Try this in the console:
 
@@ -142,22 +161,22 @@ console.log(titleInput.getAttribute("value")); // "Read the DOM"
 console.log(titleInput.value); // "Inspect event propagation"
 ```
 
-For this text input:
+For a text input:
 
-- The `value` **attribute** supplies its default value.
-- The `.value` **property** exposes its current value.
+- The `value` **attribute** is the starting value, the one the input shows when the page loads.
+- The `.value` **property** is what's in the box right now.
 
-Typing changes the current value, not the `value` attribute. Reading the attribute to find out what the user typed therefore gives the wrong answer.
+Typing changes the property and leaves the attribute alone. So if you read the attribute to find out what the user typed, you get the starting value instead. That's the third surprise from the opening: the Elements panel shows attributes, and the box shows the property.
 
-Attributes are not permanently frozen: `setAttribute` can change them. Some properties read and write their corresponding attributes directly, so their values stay in sync. A text input's current value is a useful example precisely because it has separate state. Updating its default can affect the current value before it has been edited; that does not make the attribute a reliable source for the user's current input.
+One wrinkle: on a fresh input the two look linked. Reload, then run `document.querySelector("#task-title").setAttribute("value", "x")`, and the box shows "x". But once the user edits the field, or code sets `.value`, the link breaks: setting the attribute changes only the starting value, and the box keeps its text. So read `.value` for what's in the box, and treat the attribute as the default.
 
-Also, assigning `.value` in JavaScript does not automatically fire an `input` event. A state change and an event notification are distinct operations.
+Also, setting `.value` from JavaScript doesn't fire an `input` event. Changing a value and announcing that it changed are separate things, and the next section is about the announcing.
 
-## Events report something happening
+## Events report what happened
 
-When something happens, such as a click or an edit to an input, the browser creates an **event object** containing information about it.
+When something happens on the page, such as a click or an edit to an input, the browser creates an **event object** describing it.
 
-An **event listener** is a function you ask the browser to call when an event of a particular type reaches the place where you registered it. `addEventListener` makes that registration:
+An **event listener** is a function you hand to the browser, asking it to call that function when a particular type of event reaches a particular element. `addEventListener` registers one:
 
 ```js
 document.querySelector("#task-title").addEventListener("input", (event) => {
@@ -165,27 +184,25 @@ document.querySelector("#task-title").addEventListener("input", (event) => {
 });
 ```
 
-Now type in the field. The listener receives the `input` event and reads the control's current value.
+Paste that into the console and type in the field. Each keystroke logs `input` and the box's current text.
 
-Three event types matter to our task form:
+`(event) => { ... }` is an **arrow function**: a short way to write a function. The part in parentheses is its parameter, and the part in braces is its body. You don't call it yourself. The browser calls it every time an `input` event arrives and passes the event object in as `event`. `event.currentTarget` is the element you attached the listener to, here the input. A later section shows why that's worth naming.
 
-- **`click`** reports activation by clicking and can also result from keyboard activation of a button. It is not limited to a physical mouse click.
-- **`input`** reports user-driven changes to the input's value, including typing and pasting. It is not the same as a key press.
-- **`submit`** occurs on the form after the browser has checked rules such as `required` and allowed submission to proceed, but before it completes the submission. Those built-in checks are called **native constraint validation**.
+Three event types matter for the task form:
 
-The event object exposes details such as `type`, `target`, `currentTarget`, and whether its default action can be canceled. We will inspect those as we go.
+- **`click`** fires when the button is activated. That includes a mouse click, a tap, and pressing Enter or Space while the button has focus.
+- **`input`** fires when the user changes the input's text, by typing, pasting, or deleting.
+- **`submit`** fires on the form when the browser is about to submit it. It comes after the browser's built-in checks, such as `required`, have passed. Those checks are called **native constraint validation**.
 
-### Listen to the operation you intend to handle
+### Listen for the form's submit event
 
-“Add this task” is the form's submission operation, not merely a click on its button.
+"Add this task" is something the form does, and there's more than one way to start it: clicking Add task, pressing Enter in the text field, or code calling `form.requestSubmit()`. The `submit` event fires on the form for all of them.
 
-Users can activate the button with a pointer or keyboard. In this form, pressing Enter in the text field can also submit. Code can request submission with `form.requestSubmit()`.
+`submit` also waits for the browser's checks. If the field is empty, `required` blocks the submission and `submit` never fires. A click listener on the button runs on every click, including the ones where the field is empty and nothing gets submitted. So the code that adds a task belongs in a `submit` listener.
 
-A button-click listener alone ties application behavior to one control's activation. A form-submit listener expresses the operation and runs after native validation has allowed submission.
+(`form.submit()` also exists, but it skips the `submit` event and the validation checks. Use `requestSubmit()` when you want the normal path.)
 
-There is one API distinction worth knowing: `form.submit()` bypasses the `submit` event and native constraint validation. Use `requestSubmit()` when you want the ordinary submission path.
-
-Registering a listener does not itself replace a default action. This code logs submission **and still allows navigation**:
+Adding a listener doesn't stop the browser from submitting. Paste this, then click Add task:
 
 ```js
 document.querySelector("#task-form").addEventListener("submit", (event) => {
@@ -193,19 +210,19 @@ document.querySelector("#task-form").addEventListener("submit", (event) => {
 });
 ```
 
-Reload between console experiments to remove their listeners. If you want to preserve submission logs across navigation, enable “Preserve log” in DevTools.
+The message flashes in the console and the page reloads anyway. That's the first surprise from the opening. To keep console messages across a reload, turn on "Preserve log" in the Console settings. A reload also removes every listener you added from the console, which is handy: reload between experiments so old listeners don't pile up.
 
-## Events can travel through the tree
+## Events travel down and back up the tree
 
-You click the text inside the button. The browser identifies the nested `span` as the **target**: the element on which this click happened.
+Say you click the "Add task" text. That text is inside the span, so the span is the **target**: the element the click happened on.
 
-The span has parents around it: the button, form, main, body, and html elements, then the document. Those objects form a path between the document and the span. The browser already knows the target; it is not searching the whole tree for it.
+The span has ancestors around it: the button, form, main, body, and html elements, then the document. Those objects form a path from the document down to the span. The browser already knows the target, so it doesn't search the tree for it. It just walks that path.
 
-To deliver the click to listeners, the browser follows that path **down to the span, then back up**:
+It walks the path **down to the span, then back up**:
 
-1. **Down the tree — capturing phase.** Starting at the document, the browser visits `html`, `body`, `main`, `form`, and `button`, in that order. At each point it runs listeners registered for this downward pass.
-2. **At the span — target phase.** The browser reaches the clicked element and runs its own listeners.
-3. **Back up the tree — bubbling phase.** A `click` event bubbles, so the browser visits `button`, `form`, `main`, `body`, `html`, and finally the document. At each point it runs listeners registered for this upward pass.
+1. **Down the tree, the capturing phase.** Starting at the document, the browser visits `html`, `body`, `main`, `form`, and `button`, in that order. At each one, it runs the listeners registered for the way down.
+2. **At the span, the target phase.** The browser reaches the clicked element and runs its listeners.
+3. **Back up the tree, the bubbling phase.** `click` events bubble, so the browser visits `button`, `form`, `main`, `body`, `html`, and finally the document, running the listeners registered for the way up.
 
 ```text
 Down:  document → html → body → main → form → button
@@ -215,32 +232,34 @@ Target:                                          span
 Up:    document ← html ← body ← main ← form ← button
 ```
 
-This delivery along the path is called **event propagation**. Only the objects on this path participate; the sibling input and task list are not visited. An object can be on the path even when we have not attached a listener to it.
+This walk is called **event propagation**. Only the objects on the path take part: the input next to the button and the task list are never visited. An object is still on the path even if nothing is listening on it.
 
-**The same click event makes both passes. Its target remains the span.** The form and button are not generating additional clicks. “Capture” does not mean catching, canceling, or redirecting the click; it names the downward pass. “Bubble” names the upward pass.
+It's one click, making both trips, and its target stays the span the whole time. The form and the button don't create clicks of their own. That's the second surprise from the opening: a listener on the form runs for a click on the button because the form is on the click's path. "Capture" here just names the trip down; it doesn't mean catching or stopping the click. "Bubble" names the trip up.
 
-For this explanation we started at the document. The full browser path also includes `window`, the object representing the browser window, outside the document: its capture listeners run before the document's, and its bubbling listeners run afterward.
+The full path starts one step earlier, at `window`, the object that represents the browser tab around the document. Its capture listeners run before the document's, and its bubbling listeners run last.
 
-### Choose which pass a listener joins
+### Choose which trip a listener joins
 
-When registering a listener on an ancestor, you choose when it runs:
+When you add a listener to an ancestor, you choose when it runs:
 
-- `{ capture: true }` means **run on the way down**, before the target's listeners.
-- Omitting that option means **run on the way up**, after the target's listeners, for an event that bubbles.
+- Pass `{ capture: true }` and it runs **on the way down**, before the target's listeners.
+- Leave that option out and it runs **on the way up**, after the target's listeners (for events that bubble).
 
-The browser does not run every listener twice. A listener registered for capture runs on the downward pass; an ordinary ancestor listener runs on the upward pass. You can register separate listeners for each pass on the same object.
+Each listener runs once per event, on the trip it joined. If you want to hear the event both ways, add two listeners.
+
+Most events bubble, but not all. `focus` doesn't, for example. A capture listener on an ancestor still hears it, because the trip down happens either way.
 
 ### Watch one click go down and back up
 
-To run the script examples as files, serve this folder over local HTTP, create `app.js`, and add this just before `</body>`:
+So far you've pasted code into the console. For the longer examples, put the code in a file. Create `app.js` next to `index.html`, and add this line just before `</body>`:
 
 ```html
 <script type="module" src="./app.js"></script>
 ```
 
-For example, `python -m http.server 8000` serves the folder at `http://localhost:8000`. Modules should be served over HTTP rather than loaded from a `file:` URL.
+`type="module"` loads `app.js` as a JavaScript module. A module script runs after the browser has parsed the whole page, so the elements already exist when your code looks them up. Browsers fetch modules with stricter security checks than regular scripts, and in Chrome a page opened from a `file://` address fails those checks and the module never loads. That's why you're serving the folder.
 
-Use this as the contents of `app.js`. Later examples that replace this file should be run after a reload, not piled on top of its listeners.
+Put this in `app.js`, then reload the page:
 
 ```js
 const span = document.querySelector("#add-label");
@@ -262,7 +281,7 @@ document.addEventListener("click", () => {
   console.log("document: bubble — back at the document");
 });
 
-// Keep the page open; cancellation is explained in the next section.
+// Keep the page open; cancellation is explained later in the article.
 form.addEventListener("submit", (event) => {
   event.preventDefault();
 });
@@ -276,13 +295,13 @@ span: target — reached the clicked element
 document: bubble — back at the document
 ```
 
-The document's first listener runs before the span's listener because it was registered for capture. Its second listener runs after the span's listener because it was registered for bubbling. Both observe the same click, at different points in its delivery.
+The document's first listener runs before the span's because it joined the trip down. Its second listener runs after the span's because it joined the trip up. Both see the same click, at different points along the path. The `submit` listener at the bottom stops the page from reloading so you can read the log; the section on default actions explains how.
 
 ### Add listeners along the path
 
-Now replace `app.js` with the expanded example below. It adds listeners to the form and button so we can see more of the route.
+Now replace `app.js` with this longer version, which adds listeners on the form and the button so you can see more of the route.
 
-There is one detail to know at the target: its capture listeners run first, then its ordinary, non-capture listeners. Both groups run during the **target phase**, not the ancestor capturing or bubbling phases. Within each group, listeners run in registration order.
+One detail at the target: the span's own capture listeners run first, then its other listeners. Both groups run in the target phase. Within each group, listeners run in the order you added them.
 
 ```js
 const form = document.querySelector("#task-form");
@@ -339,7 +358,7 @@ form.addEventListener("submit", (event) => {
 });
 ```
 
-Click the button's **text**, not its padding. The expected logs are:
+Reload and click the button's **text**, not the padding around it. The logs, laid out as a table, are:
 
 ```text
 location          phase  target      currentTarget
@@ -351,82 +370,22 @@ button bubble     3      add-label   add-task
 form bubble       3      add-label   task-form
 ```
 
-`eventPhase` is `1` for capture, `2` at the target, and `3` for bubbling. Clicking the button's padding instead targets the button, so the span listeners do not run.
+`eventPhase` is `1` on the way down, `2` at the target, and `3` on the way up. If you click the button's padding instead, the button becomes the target and the span's listeners don't run at all.
 
-### `target` and `currentTarget` answer different questions
+### Two different targets
 
-- **`target`:** Which element did this click happen on? For our example, it stays the span throughout these listeners.
-- **`currentTarget`:** Which object has the listener that is running right now? Inside the form's listener it is the form; inside the button's listener it is the button.
+The log shows two properties that are easy to mix up:
 
-Use `currentTarget` when you need the element whose listener you attached. Use `target` when an ancestor listener needs to identify the descendant involved in the interaction.
+- **`target`** is the element the click happened on. It's the span in every row.
+- **`currentTarget`** is the element whose listener is running right now. Inside the form's listeners it's the form; inside the button's, the button.
 
-Read `currentTarget` during the callback. It becomes `null` after dispatch; retaining the event object does not preserve that listener's location for later asynchronous work.
+Use `currentTarget` when you want the element you attached the listener to. Use `target` when a listener on an ancestor needs to know which element inside it was clicked. That second case is what the task list needs, a couple of sections from now.
 
-This explanation assumes ordinary DOM nesting. Shadow DOM introduces retargeting rules that we are deliberately leaving out.
+## Cancel the browser's default action
 
-### Capture and delegation solve different placement problems
+You've now seen the two halves of the first surprise. The click handler ran, and then the browser did what forms do: it submitted, which reloaded the page. That built-in response is the event's **default action**. Following a link and submitting a form are both default actions.
 
-A parent can observe descendant interactions without registering a listener on every child. That is **event delegation**.
-
-For a small demonstration, replace the empty list with this markup:
-
-```html
-<ul id="task-list">
-  <li>
-    Read the DOM
-    <button type="button" data-action="remove"><span>Remove</span></button>
-  </li>
-</ul>
-```
-
-Add this listener to `app.js`:
-
-```js
-const list = document.querySelector("#task-list");
-
-list.addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof Element)) {
-    return;
-  }
-
-  const removeButton = target.closest('button[data-action="remove"]');
-  if (!removeButton) {
-    return;
-  }
-
-  removeButton.closest("li").remove();
-});
-```
-
-`closest` starts at the clicked element and checks it, then its parents, until it finds an element matching the selector. This handles the click landing on the nested span rather than the button itself. The list listener runs when the event travels back up to the list and removes that button's row. It also works for matching rows added later: their events reach the same list listener.
-
-Capture, by contrast, lets an ancestor observe the event **before** descendant handlers run. It can help when you need early observation, but it is not a way to replace a button's semantics.
-
-Not every event bubbles. For example, `focus` does not bubble, but ancestor capture listeners can still observe it. “Does not bubble” does not mean “only the target can hear it.”
-
-## Propagation and default behavior are separate
-
-Two questions are easy to confuse:
-
-1. Which listeners receive this event?
-2. Does the browser perform the default action associated with it?
-
-Propagation is the event's delivery down and up the path. Cancellation is asking the browser not to perform its default action. These are separate controls: stopping delivery to other listeners does not, by itself, cancel the action.
-
-### `preventDefault()` cancels a cancelable default action
-
-For a form's `submit` event, calling `preventDefault()` cancels native submission. It does not prevent ancestor listeners from receiving that submit event.
-
-`event.cancelable` tells you whether the browser allows this event's default action to be canceled. `event.defaultPrevented` tells you whether a listener has successfully canceled it.
-
-A listener registered with `{ passive: true }` promises not to cancel the default action. For scrolling interactions, that promise can let the browser start scrolling without waiting for the listener to decide whether to cancel it. Calling `preventDefault()` from a passive listener does not cancel the action, even if the event is otherwise cancelable.
-
-Cancellation is also event-specific. Canceling a submit button's `click` can prevent that click from initiating submission. Canceling the form's `submit` handles the submission operation itself, regardless of which ordinary submission route initiated it.
-
-### Replace submission with our client-side operation
-
-Return to the original empty list and replace `app.js` with this complete task-adding script:
+Replace `app.js` with a script that adds tasks instead:
 
 ```js
 const form = document.querySelector("#task-form");
@@ -443,27 +402,67 @@ form.addEventListener("submit", (event) => {
 
   const item = document.createElement("li");
   item.textContent = title;
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.textContent = "Remove";
+  item.append(" ", removeButton);
+
   list.append(item);
 
   input.value = "";
 });
 ```
 
-Now submission reads the current input value, creates a DOM element, puts the user's title into its text, appends it to the list, and clears the field. The trim check rejects whitespace-only titles, which `required` alone does not reject.
+Reload and add a few tasks. Each one shows up in the list with a Remove button, the field clears, and the page stays put. (The Remove buttons don't do anything yet; the next section wires them up.)
 
-Use `textContent` here, not `innerHTML`: a task title is text, not HTML supplied by the user. A title such as `<strong>Read</strong>` should appear literally, not create an element.
+Here's what the listener does, in order:
 
-The native submission was canceled because this script replaces it. We did not stop the submit event from propagating, and we did not need to suppress the button's click.
+1. `event.preventDefault()` tells the browser to skip the default action for this event. For a `submit` event, that means the form isn't sent and the page doesn't reload.
+2. `input.value.trim()` reads what's in the box and removes spaces from both ends. If nothing's left, the listener stops. `required` alone would accept a title made of spaces.
+3. `document.createElement("li")` makes a new list item, `textContent` puts the title in it, and `append` adds a space and a `type="button"` button after the title. `type="button"` matters: a button's default type inside a form is `submit`.
+4. `list.append(item)` adds the item to the end of the list, and the last line clears the field.
 
-Reloading still loses the tasks. We changed the live DOM, not a stored file or database.
+The script sets `textContent` rather than `innerHTML` because a task title is text. If someone types `<strong>Read</strong>`, they should see those characters, not bold text. `innerHTML` would turn the title into elements.
 
-### Stopping propagation is not canceling submission
+`preventDefault()` only cancels the default action. The `submit` event still travels its full path, so a listener on an ancestor still hears it. `event.cancelable` tells you whether the browser lets you cancel this event's default action, and `event.defaultPrevented` tells you whether a listener already has.
 
-`stopPropagation()` stops the event from continuing along its path. It does **not** stop the remaining listeners being run on **the same element, in the same group—capture or non-capture**. Running one such group is what we mean by a **listener pass**.
+The click and the submit are separate events. Cancelling the button's click would also stop that click from submitting the form, but `form.requestSubmit()` from code doesn't click anything and would still submit. Clicking the button, pressing Enter in the field, and `requestSubmit()` all fire the `submit` event, so that's where to cancel it. (`form.submit()` is the exception from earlier: it skips `submit` entirely, so no listener can cancel it.)
 
-`stopImmediatePropagation()` also stops the remaining listeners in that group.
+Reloading the page still clears the list. The script changes the live DOM, not your `index.html` and not a database.
 
-To see the difference, replace `app.js` with this experiment:
+## Let the list handle clicks on its rows
+
+Each new row gets a Remove button. You could add a click listener to every button as you create it. Or you can add one listener to the list and let clicks bubble up to it. A listener on a parent that handles events from its descendants is called **event delegation**.
+
+Add this to the end of `app.js`:
+
+```js
+list.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("button");
+  if (removeButton === null) {
+    return;
+  }
+
+  removeButton.closest("li").remove();
+});
+```
+
+Reload, add two or three tasks, and remove one. Every row's button works, including rows that didn't exist when this listener was added. That's the payoff of delegation: a click on any Remove button bubbles up to the list, wherever and whenever that button was created.
+
+The listener runs for every click inside the list, so it checks what was clicked first:
+
+- `event.target` is the element the click happened on. That might be the Remove button, or it might be the `li` if you clicked the title text.
+- `closest("button")` checks that element, then its parents, and returns the first one that matches the selector. If the click landed on the button, or on something inside the button (such as an icon added later), you get the button. If it landed on the title, there's no button on the way up, so you get `null` and the listener stops.
+- `removeButton.closest("li")` finds the button's row, and `remove()` takes it out of the tree.
+
+Delegation relies on the trip up, so it works with events that bubble, such as `click`, `input`, and `submit`.
+
+## Stop an event from traveling further
+
+`event.stopPropagation()` ends the event's trip: no listeners on the rest of the path run. The other listeners on the element that's currently handling the event still run. `event.stopImmediatePropagation()` stops those too.
+
+It's tempting to reach for `stopPropagation()` when a click does something unexpected. So test whether it would have stopped the page reload from the opening. Replace `app.js` with this experiment:
 
 ```js
 const button = document.querySelector("#add-task");
@@ -488,7 +487,7 @@ form.addEventListener("submit", (event) => {
 });
 ```
 
-With a valid input, click Add task:
+Reload, make sure the input isn't empty, and click Add task:
 
 ```text
 A
@@ -496,35 +495,44 @@ B
 submit still happened
 ```
 
-A stopped the click from reaching the form's bubbling listener C. B still ran because A and B are both non-capture listeners registered on the same button: they belong to the same listener pass.
+A stopped the click from reaching the form, so C never ran. B still ran, because it's on the same button as A.
 
-Now replace `stopPropagation()` with `stopImmediatePropagation()`:
+Now change `stopPropagation()` to `stopImmediatePropagation()` and try again:
 
 ```text
 A
 submit still happened
 ```
 
-Neither method canceled the button's activation behavior. Submission still started and produced a **different event**, `submit`, dispatched at the form. Its listener keeps the page open by canceling that event.
+This time B is skipped too. But in both versions, the form was still submitted. The button press starts submission as its default action, and the browser then fires a separate event, `submit`, at the form. Stopping the click's trip doesn't cancel that. Only the `submit` listener's `preventDefault()` keeps the page open here. Delete that listener and the page reloads in both versions.
 
-If you remove that submit listener, the browser submits and navigates in both versions. Stopping the click's propagation does not cancel navigation or form submission.
+(One detail if you ever stop propagation at the target: the target's capture listeners and its other listeners run as two separate groups. `stopPropagation()` in one of the span's capture listeners lets the rest of its capture listeners run, but skips its other listeners and everything on the way back up.)
 
-**Same element does not always mean same listener pass.** At the target—the clicked span in our example—the browser runs two separate groups:
+If you catch yourself adding `stopPropagation()` to make a bug go away, check two things first: which element the listener is on, and whether you meant `preventDefault()`. Usually that's the real fix.
 
-1. The span's capture listeners.
-2. Then the span's non-capture listeners.
+## The same form in Angular
 
-If a capture listener on the span calls `stopPropagation()`, the remaining capture listeners on that span can still run. But its later non-capture group does not run, and neither do the ancestors' bubbling listeners. With `stopImmediatePropagation()`, even the remaining capture listeners stop.
+Angular builds the same kind of DOM and uses the browser's own events. What changes is how you describe the page: instead of creating and appending elements yourself, you keep the data in the component and let Angular keep the elements in sync with it.
 
-That is why the rule is **same element and same group**, not simply “all listeners on the same element.”
+This example keeps that data in two **signals**. A signal is an Angular object that holds one value:
 
-Prefer correct elements and deliberate listener placement over adding suppression calls until the symptoms disappear. Reach for a propagation-stopping method when there is an actual propagation boundary to enforce.
+- `signal("Read the DOM")` creates one with a starting value.
+- Calling it, such as `draft()`, reads its current value.
+- `draft.set("")` replaces the value.
+- `tasks.update(...)` calls a function with the current value and stores whatever it returns.
 
-## Angular uses the same browser foundation
+When a signal used by the template gets a new value, Angular updates the parts of the page that depend on it.
 
-Angular changes how we describe the relationship between application state and the DOM. It does not replace the browser's event system or remove native HTML behavior.
+The template uses a few pieces of syntax, and each one maps to something you've already done by hand:
 
-Here is the same task interaction as a component in a current Angular application:
+- **`(submit)="addTask($event)"`** adds a listener for the form's native `submit` event, like `addEventListener("submit", ...)`.
+- **`$event`** is the browser's event object, passed to `addTask`.
+- **`[value]="draft()"`** sets the input's `.value` property, not its `value` attribute, from the signal.
+- **`(input)="..."`** listens for the native `input` event and copies the box's text into the signal.
+- **`#titleInput`** names the input element so the template can read `titleInput.value` directly.
+- **`@for`** repeats the `li` for each task. Angular creates and removes the list items, like `createElement` and `remove()` did earlier. `track task.id` tells Angular which item belongs to which task.
+
+Here's the component:
 
 ```ts
 import { Component, signal } from "@angular/core";
@@ -581,58 +589,43 @@ export class TaskNotes {
 }
 ```
 
-Import this component into an existing standalone parent and render `<task-notes />`, or bootstrap it as the application's root. It deliberately does not import Angular forms directives; this example is about native events, not a form library.
+`addTask` follows the same steps as the plain script: cancel the submission, trim the title, then add the task. `[...tasks, task]` creates a new array containing the existing tasks followed by the new one, and `update` stores that array in the signal. Angular then adds the matching `li`.
 
-Here, the two **signals** hold application state: `draft` contains the current title, and `tasks` contains the task array. Calling `draft()` or `tasks()` reads the current value. `set` replaces a value; `update` calculates a replacement from the previous value.
+To try it, add `TaskNotes` to the `imports` array of a component in an existing Angular project (such as the root component that `ng new` generates) and put `<task-notes />` in that component's template. The example doesn't use Angular's forms package on purpose, so you can see the native events directly.
 
-The template reads that state and describes the resulting elements. We update the state rather than manually creating and appending list items.
+Notice that `addTask` still calls `preventDefault()`. Writing `(submit)` adds a listener, the same as `addEventListener` did, and a listener alone doesn't cancel the default action. Without that line, the page would reload just like before.
 
-The pieces correspond directly to the browser example:
+The browser rules still apply underneath. Clicking the span still sends a native click down to the span and back up through the button, the form, and the component's **host element** (the `<task-notes>` element Angular renders the template into). The `required` check still runs before `submit` fires, because nothing replaced it.
 
-- **`(submit)`** registers handling for the form's native submit event.
-- **`$event`** supplies that event object to `addTask`.
-- **`[value]`** binds the input's current value property to application state.
-- **`(input)`** updates the draft when the user edits the control.
-- **`#titleInput`** gives the template a reference to the input so we can read its `.value` without guessing the type of `$event.target`.
-- **`@for`** describes list items from task state; Angular manages the corresponding DOM updates.
+How Angular decides when to update the page after a signal changes is its own topic, covered in the [change detection article](/dump/blog/angular-change-detection/).
 
-We still call `preventDefault()` explicitly. A template event binding does not, merely by existing, cancel native submission.
+### Native events and component outputs
 
-Angular also cancels the default action if an event-handler expression evaluates to `false`. Explicit cancellation is clearer; the method above returns `void` instead of relying on that convention.
+`(click)` on a button listens for the browser's click event. A component can also define its own events, called **outputs**, such as "a task was added". A parent listens with the same parentheses, for example `(taskAdded)="save($event)"`, but there `$event` is whatever value the component sent, not a browser `Event` object.
 
-Clicking the span still produces a native click that can bubble through the button, form, and component host. Framework-created elements are still DOM elements. The native `required` check still applies before ordinary submission because we have not replaced it with Angular forms behavior.
+The syntax matches, but outputs don't travel through the DOM. Only the parent that bound `(taskAdded)` on that component hears it; there's no capture or bubbling. The [component composition article](/dump/blog/angular-component-composition/) covers designing inputs and outputs.
 
-Signals and template updates explain how Angular reflects application state. The scheduling and change-detection mechanisms behind those updates belong in the [change detection article](/dump/blog/angular-change-detection/), not in this event lesson.
+## Back to the three surprises
 
-### Native events and component outputs are different
+Here are the three surprises from the opening, now with their causes:
 
-A binding such as `(click)` on a native button handles a browser event. A **component output** is a notification the component defines and sends to its caller, such as “a task was added.” In a binding such as `(taskAdded)`, `$event` is whatever value the component sends with that notification, not necessarily an `Event` object.
+- **The page reloaded even though the click handler ran.** Your handler ran, and then the browser did its default action for a submit button: it submitted the form. Calling `stopPropagation()` doesn't change that. Call `preventDefault()` on the form's `submit` event.
+- **A listener on the form ran for a click on the button.** The form is an ancestor of the button, so it's on the click's path. The click bubbles up through it after reaching the button. `event.target` tells you what was actually clicked.
+- **DevTools showed `value="Read the DOM"` while the box showed something else.** The Elements panel shows the `value` attribute, which is the starting value. The box shows the `.value` property, which is what the user typed.
 
-Angular component outputs do **not** bubble through the DOM. Similar binding syntax does not imply the same propagation behavior. State ownership and output design belong in the component composition article.
+Check yourself:
 
-## Predict the interaction
+1. A listener on the button calls `stopPropagation()`. With a valid title in the field, does a click on the button still submit the form?
+2. You click the "Add task" text. What are `target` and `currentTarget` inside a listener on the form?
+3. A task row is added after the list's click listener was registered. Does the listener handle clicks on that row's Remove button?
+4. You type a new title. Does `getAttribute("value")` return it?
 
-Before running these variations, predict what will happen:
+Answers:
 
-1. You click the nested span. In which direction does the browser follow the path during capture? What happens at the span, and in which direction does bubbling proceed?
-2. In the expanded listener-order experiment, what are `target` and `currentTarget` inside the form's listener?
-3. You click the button's padding instead. Which listeners disappear?
-4. Listener A calls `stopPropagation()`. Do B and C run? Does the form still begin submission?
-5. A calls `stopImmediatePropagation()` instead. What changes?
-6. The submit listener calls `preventDefault()`. Can an ancestor still observe that submit event?
-7. You type a new title. Does `getAttribute("value")` now return it?
-
-The answers follow from the same model:
-
-- Capture goes down the ancestor path toward the span. The span's own listeners run at the target. Bubbling goes back up the path toward the document and window.
-- The span is the target; the form is the form listener's current target.
-- Clicking padding targets the button, so the span listeners disappear.
-- With `stopPropagation()`, B runs, C does not, and submission can still begin.
-- With `stopImmediatePropagation()`, B also stops; submission can still begin.
-- Canceling submission does not stop the submit event from propagating.
-- The current input value is `.value`, not its default-value attribute.
-
-The useful habit is to separate **meaning**, **live state**, **event delivery**, and **default behavior** before reaching for a framework API. Angular builds on those responsibilities; it does not make them disappear.
+1. Yes. Stopping propagation only stops other listeners from hearing the click. Submission is the default action, and only `preventDefault()` cancels it.
+2. `target` is the span, because that's where the click happened. `currentTarget` is the form, because that's where the running listener is.
+3. Yes. The click bubbles from the new button up to the list, wherever the button came from.
+4. No. Typing changes the `.value` property. The attribute keeps the starting value.
 
 ## Sources and further reading
 
@@ -640,5 +633,7 @@ The useful habit is to separate **meaning**, **live state**, **event delivery**,
 - [WHATWG HTML: the input element and its value](https://html.spec.whatwg.org/multipage/input.html#the-input-element)
 - [WHATWG DOM: dispatching events and invoking listeners](https://dom.spec.whatwg.org/#dispatching-events)
 - [WHATWG DOM: `preventDefault`, `stopPropagation`, and `stopImmediatePropagation`](https://dom.spec.whatwg.org/#interface-event)
+- [MDN: JavaScript modules](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules)
+- [Angular: signals](https://angular.dev/guide/signals)
 - [Angular: template event listeners](https://angular.dev/guide/templates/event-listeners)
 - [Angular: component outputs](https://angular.dev/guide/components/outputs)

@@ -1,7 +1,8 @@
 ---
 title: "Where HTML comes from: static pages, SSR, SPAs, and hydration"
-description: "Understand rendering strategies by separating where the initial HTML is produced, when its data is available, and how the page becomes interactive."
+description: "Follow one task board site through static generation, server rendering, client rendering, and hydration, and see where and when each one makes the page's HTML."
 pubDate: "2026-09-30"
+updatedDate: "2026-10-15"
 tags:
   - rendering
   - ssr
@@ -9,72 +10,81 @@ tags:
   - frontend
 ---
 
-Rendering discussions often start with framework names: Angular, Next.js, Nuxt, Astro, Analog.js. That makes it easy to confuse a product with the architecture it happens to support.
+Open an Angular app that was built without server rendering, right-click the page, and choose **View Page Source**. You'll see almost nothing: an `<app-root>` tag, a few `<script>` tags, and no actual content. Now do the same on this blog, and the whole article is right there in the source.
 
-A more useful question is:
+Both pages look complete once they've loaded, but their HTML was made in different places. The blog's HTML was written out before you asked for it. The Angular app's visible content was built by JavaScript, inside your browser, after the page arrived.
 
-> Where and when is the initial HTML produced, and what still needs to happen in the browser?
+That's what a **rendering strategy** is: a decision about where and when a page's HTML gets made, and what's left for the browser to do after it arrives. This article walks through the main strategies using one example site, then shows how to pick one per page.
 
-That question separates static pages, traditional server rendering, client-rendered applications, and hydrated applications without making any of them sound like the inevitable winner.
-
-We will move from static HTML to hybrid applications, then choose an approach for a concrete site.
+You'll need to know what an HTML element is. The first section covers how a browser gets a page, so you don't need to know that yet. The Angular examples use Angular 22.2.
 
 ## Contents
 
-1. [Three separate decisions](#three-separate-decisions)
-2. [Static HTML and static site generation](#static-html-and-static-site-generation)
-3. [Traditional server-side rendering](#traditional-server-side-rendering)
-4. [Client-side rendering and SPAs](#client-side-rendering-and-spas)
-5. [SSR and SSG with hydration](#ssr-and-ssg-with-hydration)
-6. [Hydration is work, not magic](#hydration-is-work-not-magic)
-7. [Islands and selective hydration](#islands-and-selective-hydration)
-8. [Choosing per route](#choosing-per-route)
-9. [Inspect the result, not the label](#inspect-the-result-not-the-label)
+1. [How a page gets to the browser](#how-a-page-gets-to-the-browser)
+2. [Static pages built ahead of time](#static-pages-built-ahead-of-time)
+3. [HTML built on the server for each request](#html-built-on-the-server-for-each-request)
+4. [HTML built in the browser](#html-built-in-the-browser)
+5. [Server HTML that JavaScript takes over: hydration](#server-html-that-javascript-takes-over-hydration)
+6. [What hydration costs](#what-hydration-costs)
+7. [Hydrating only part of a page](#hydrating-only-part-of-a-page)
+8. [Choosing per route in Angular](#choosing-per-route-in-angular)
+9. [Comparing the strategies](#comparing-the-strategies)
+10. [Check what your page actually sends](#check-what-your-page-actually-sends)
 
-## Three separate decisions
+## How a page gets to the browser
 
-People often bundle three independent choices into the word “rendering.”
+Every page starts the same way. You type an address, or click a link, and the browser sends a **request** for that URL to a **server**, a program on another machine whose job is to answer requests. The server sends back a **response**, and for a page, the body of that response is HTML: plain text that the browser reads and turns into the page you see.
 
-| Decision        | Question                                            | Examples                                                                      |
-| --------------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Initial content | Where is the page's first meaningful HTML produced? | Build process, request-time server, browser                                   |
-| Navigation      | What happens when the user follows a link?          | New document request, client-side route transition                            |
-| Interactivity   | How does the page respond to actions?               | Native HTML behavior, small scripts, hydrated components, client-rendered app |
+```text
+Browser                                Server
+   |  request: GET /guide/shortcuts      |
+   | ----------------------------------> |
+   |                                     |  find or make the HTML
+   |  response: <html>…</html>           |
+   | <---------------------------------- |
+   |
+   builds the page from that text
+```
 
-A statically generated page can have interactive JavaScript. A server-rendered site can use client-side navigation. A single-page application can receive server-rendered HTML on its initial load.
+So "where does the HTML come from?" really asks what the server does in the middle step. It can send a file that already exists, or it can run code to produce the HTML right then. Or it can send a nearly empty page, and JavaScript running in the browser fills it in afterwards.
 
-**SSR is a rendering strategy. SPA is primarily an application and navigation model.** They are not mutually exclusive.
+The word "rendering" gets used for two separate jobs, so it's worth keeping them apart. **Application rendering** turns your data and templates into HTML or DOM elements, and that's what this article is about. **Browser rendering** turns the finished HTML and CSS into pixels on screen. The browser does its part no matter where the HTML came from.
 
-Also distinguish two uses of “rendering”:
+### The example site
 
-- **Application rendering** produces HTML or updates the DOM from data and templates.
-- **Browser rendering** turns the DOM and styles into layout, painted content, and displayed pixels.
+The examples in this article all come from one site: a task board app with three kinds of page.
 
-The browser still performs its rendering work whether the HTML came from a server, a build, or JavaScript.
+| Route        | What it shows                                                        |
+| ------------ | -------------------------------------------------------------------- |
+| `/guide/...` | Public help articles, such as `/guide/shortcuts`. Same for everyone. |
+| `/account`   | The signed-in user's name and settings. Different for each user.     |
+| `/board`     | The task board itself: add, check off, and remove tasks.             |
 
-## Static HTML and static site generation
+A **route** is a URL path the site responds to. The three routes have different needs, and that turns out to be the main thing that decides how each one should be rendered.
 
-The simplest case is an HTML file that already exists before the visitor requests it.
+## Static pages built ahead of time
+
+The simplest answer is a file that already exists before anyone asks for it. Here's what the server sends for `/guide/shortcuts`:
 
 ```html
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Article notes</title>
+    <title>Keyboard shortcuts</title>
   </head>
   <body>
     <main>
-      <h1>Article notes</h1>
-      <p>The article is already in the response.</p>
+      <h1>Keyboard shortcuts</h1>
+      <p>Press N to add a task.</p>
     </main>
   </body>
 </html>
 ```
 
-The hosting service reads the file and sends it. The browser does not have to run application JavaScript to discover that paragraph.
+The server finds the file and sends it as it is. The browser gets the text in the very first response, so it can show it without running any JavaScript.
 
-**Static site generation (SSG)** automates the creation of those files. A build can turn Markdown, templates, components, or CMS data into ready-to-serve HTML.
+Writing hundreds of these files by hand would be tedious, so a build step does it. **Static site generation (SSG)** means a program runs once, before the site is deployed, and turns your sources, such as Markdown files and page templates, into finished HTML files. Angular calls this **prerendering**: rendering the page ahead of time, at build time.
 
 ```mermaid
 flowchart LR
@@ -84,51 +94,48 @@ flowchart LR
     D --> E[Browser]
 ```
 
-The relevant distinction is not whether a human wrote the HTML. It is whether the meaningful HTML was produced **before the request**.
+A **static host** is a server that only sends existing files. A **CDN**, or content delivery network, is a set of servers spread around the world that keep copies of those files, so each visitor gets them from somewhere nearby.
 
-### What static delivery buys you
+This blog works this way. Its Markdown articles become HTML files when the site is built with Astro, and a static host serves them. Small scripts add extras like the theme switch and diagrams, but the article text doesn't depend on them.
 
-- No application render is required for each page request.
-- The same public output can be served from a CDN.
-- Hosting and deployment are relatively simple.
-- The article remains available if enhancement scripts fail.
+### What static pages are good at
 
-This is a strong fit for blogs, documentation, and public pages that can tolerate content updates arriving through a build and deployment.
+- The server does no work per request beyond sending a file, so it's fast and cheap.
+- The same files can be copied to a CDN, because they're the same for every visitor.
+- The content is there even if a script fails to load.
 
-This blog is a concrete example: its Markdown articles become HTML during the Astro build and are delivered through static hosting. Scripts can enhance the page with theme switching and diagrams without making the article text depend on a client-rendered application.
+That makes SSG a good fit for `/guide`: everyone sees the same help article, and it only changes when someone publishes an update.
 
-### What static does not mean
+A static page can still have JavaScript. It can call an API after it loads, or submit a form somewhere. "Static" describes the first HTML only: it was made before the request, so it's the same for every visitor.
 
-It does not mean “no JavaScript,” “no backend anywhere,” or “the page can never change.” A static page can call an API after loading or submit a form to a service. The distinction is that its **initial generated HTML** is not tailored to the requesting user's session.
+### Where static pages fall short
 
-Fresh API data added in the browser is client-rendered data. It does not retroactively make the original file request-time SSR.
+Changes only show up after a rebuild and deploy. That's fine for help articles. It doesn't work for `/account`, because the build can't know who's going to sign in, and it gets slow if the site has hundreds of thousands of pages to regenerate on every change.
 
-The costs are freshness and scale at build time. If you generate many thousands of pages, builds and deployments can grow expensive. If content must change immediately, rebuilding the entire output may not be a suitable update mechanism.
+## HTML built on the server for each request
 
-## Traditional server-side rendering
-
-With traditional SSR, the server produces HTML while handling the request, often from a template plus database or session data.
+For `/account`, the HTML has to be made when the request arrives, because only then does the server know who's asking. That's **server-side rendering (SSR)**: the server runs code for each request, reads the data it needs, and fills a template with it.
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant S as Application server
-    participant D as Data source
+    participant D as Database
     B->>S: GET /account
-    S->>D: Read authorized account data
-    D-->>S: Data
-    S-->>B: HTML containing the account page
-    Note over B: Parse HTML and display content
+    S->>D: Read this user's account
+    D-->>S: Account data
+    S-->>B: HTML with the user's name and settings
+    Note over B: Show the page
 ```
 
-PHP, Rails, Django, JSP, and server-rendered ASP.NET applications are familiar examples of this model. The language is not the defining feature; request-time HTML generation is.
+This is the oldest way to build dynamic sites. PHP, Ruby on Rails, Django, and ASP.NET all work like this. What makes it SSR is that the HTML gets made during the request; the language doesn't matter.
 
-### Native HTML is already interactive
+### Forms and links already work
 
-A server-rendered document does not need a client framework to make links and forms work:
+A server-rendered page doesn't need any JavaScript for its basic interactions. The browser already knows how to follow links and submit forms. Here's the settings form on `/account`:
 
 ```html
-<form action="/preferences" method="post">
+<form action="/account" method="post">
   <label>
     Display name
     <input name="displayName" value="Ada" />
@@ -137,243 +144,270 @@ A server-rendered document does not need a client framework to make links and fo
 </form>
 ```
 
-The server must still authenticate the request, validate input, and apply any required CSRF protection. The point is that the browser already knows how to submit a form and follow a response.
+When you click Save, the browser sends the form fields to `/account` and shows whatever HTML the server sends back. (The server still has to check who's signed in and whether the input is valid.) JavaScript can improve this, for example by saving without reloading the page, but the form works without it.
 
-JavaScript can progressively enhance this interaction—for example, submitting without replacing the document—but the baseline does not require hydration.
+### The cost is work on every request
 
-### The tradeoff is request-time work
+SSR puts the user's content in the very first response, and it can be different for every user. In exchange:
 
-SSR can put useful content in the initial response and tailor it to an authenticated user. It also introduces operational responsibilities:
+- You run a server application, not just a file host.
+- Every request waits for that server's data. If the database takes two seconds, the browser sees nothing for two seconds. **Time to first byte**, how long until the first piece of the response arrives, measures exactly this delay.
+- You have to decide what's safe to cache.
 
-- Run an application server or server-rendering platform.
-- Manage request-time data latency and failures.
-- Decide which output is safe to cache and for whom.
-- Keep personalized responses out of shared public caches.
+Caching deserves a closer look. If a page looks the same for everyone, the server can render it once and reuse the HTML for the next visitors. That's safe for a public page. It's dangerous for `/account`: cache it the same way, and the next visitor could see the previous visitor's account. So every route that's rendered on the server needs an explicit decision about whether it may be cached, and for whom.
 
-Sending populated HTML removes a client-side content-discovery step, but it does not guarantee a fast page. If the server waits on slow queries before producing any response, time to first byte can dominate.
+## HTML built in the browser
 
-Caching can reduce repeated rendering for public content. It is not accurate to say every SSR request must repeat all computation—but the freshness and cache-isolation rules still need an owner.
+`/board` is different again. People keep it open for a long time and click constantly: add a task, check one off, filter the list. The page changes after every click, so most of the work happens in the browser anyway.
 
-## Client-side rendering and SPAs
-
-In a client-rendered application, the initial document often contains a mounting point and references to application JavaScript:
+With **client-side rendering (CSR)**, the server sends almost empty HTML, and JavaScript running in the browser builds the content:
 
 ```html
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Dashboard</title>
+    <title>Task board</title>
   </head>
   <body>
-    <div id="app">Loading dashboard…</div>
-    <script type="module" src="/assets/app.js"></script>
+    <app-root>Loading board…</app-root>
+    <script type="module" src="/main.js"></script>
   </body>
 </html>
 ```
 
-The browser loads the bundle, starts the application, fetches necessary data, and creates the meaningful DOM.
+This is the page you saw in View Page Source at the start. `<app-root>` is an empty spot that the application fills in, and `main.js` is the application's **bundle**: the JavaScript files the build produced from your source code.
+
+Here's the sequence:
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant H as Static host
     participant A as API
-    B->>H: Request page
-    H-->>B: HTML shell
-    B->>H: Request application JavaScript
+    B->>H: GET /board
+    H-->>B: Nearly empty HTML
+    B->>H: GET /main.js
     H-->>B: JavaScript
-    Note over B: Start application
-    B->>A: Request dashboard data
-    A-->>B: Data
-    Note over B: Create dashboard DOM
+    Note over B: Start the application
+    B->>A: GET /api/tasks
+    A-->>B: Task data as JSON
+    Note over B: Build the task list in the DOM
 ```
 
-This is a conceptual dependency chain, not a mandatory four-step waterfall. Preloading, caching, early fetches, and bundled initial data can overlap or eliminate parts of it. But the core dependency remains: if JavaScript is responsible for creating the content, that JavaScript must run before the content exists.
+Browsers and build tools can overlap some of these steps, for example by starting to download `main.js` before the HTML has finished arriving. But the order of dependencies stays the same: the JavaScript has to download and run before it can build the content, because it's the only thing that knows what the content is.
 
-### Why this model is useful
+### SPAs and what happens when you click a link
 
-SPAs work well for interaction-heavy applications where users stay for many operations: editors, dashboards, internal tools, and applications behind login.
+A **single-page application (SPA)** is an app where clicking an internal link doesn't load a new page from the server. JavaScript catches the click, changes the URL, and swaps the content in place. An Angular app with its router works this way.
 
-The client owns navigation and much UI state. After startup, subsequent interactions may reuse already-loaded code rather than request a new HTML document every time.
+People often ask "SSR or SPA?", but the two terms answer different questions. SSR is about where the *first* HTML comes from. SPA is about what happens when you click a link *afterwards*. An Angular app can render its first page on the server and then behave like an SPA from there, so it can be both.
 
-That can produce a good experience. It does not follow that client-side routing is automatically faster than document navigation for every workload.
+### Why client rendering suits `/board`
 
-### The costs move to the browser
+After the first load, the code is already in the browser, so each click only needs a small piece of data from the API, not a whole new page. For an app people use for an hour at a time, that's a good trade. It works especially well behind a login, where search engines don't need to read the pages anyway.
 
-The browser must download, parse, and execute code before creating client-rendered content. That cost is more visible on slower devices and networks than on the developer's machine.
+### What it costs
 
-There are also failure and discoverability considerations:
+The browser has to download, read, and run the JavaScript before any content appears. On a fast laptop that takes a moment, but on a cheap phone with a weak connection it can take several seconds.
 
-- A failed bundle can leave only the shell.
-- A failed API request can prevent meaningful content from appearing.
-- Search crawlers and link-preview tools differ in how much JavaScript they execute.
-- Deep links need hosting rules that deliver the application entry point without turning asset errors into HTML responses.
+It also fails in more ways:
 
-“SPAs cannot be indexed” is too absolute. Some crawlers execute JavaScript. The better statement is that putting public content directly in the response reduces dependence on crawler execution and timing.
+- If `main.js` fails to load, the user sees "Loading board…" and nothing else.
+- If the API request fails, the page has a frame but no tasks.
+- A **crawler**, a program that downloads pages to index them for search engines or to build link previews, may not run JavaScript. Google's crawler does run it, but many link-preview bots, like the ones that build previews in chat apps, don't. Content that's already in the HTML works for all of them.
+- Deep links need a server rule. If someone opens `/board` directly, no file called `board` exists on the host. The host has to be set up to answer unknown page URLs with the app's `index.html`, so the app can read the URL and show the board. That same rule mustn't answer a missing `/main.js` with HTML, or the browser tries to run an HTML page as JavaScript.
 
-## SSR and SSG with hydration
+## Server HTML that JavaScript takes over: hydration
 
-Modern client frameworks can produce initial HTML outside the browser, then start client-side behavior using that HTML.
+Suppose the board loads too slowly with client rendering, and you want the tasks on screen right away. You can render `/board` on the server too, so the first response already contains the task list, and then let Angular take over in the browser.
 
-The initial HTML can come from:
+Angular can produce that first HTML on the server for each request (SSR), or at build time (prerendering), from the same components it runs in the browser. Then the browser loads the JavaScript, and the app starts running on top of HTML that's already on screen. Connecting the running app to that existing HTML is called **hydration**.
 
-- **SSR:** render during the page request;
-- **SSG/prerendering:** render during the build.
+Here's what happens to one button on `/board`. The component's template contains:
 
-**Hydration** is the framework's process of connecting client-side application behavior to previously rendered DOM. Depending on the framework, this includes matching existing nodes, restoring or establishing state, and connecting event handling.
+```html
+<button type="button" (click)="addTask()">Add task</button>
+```
+
+1. **The server runs the component** and turns its template into HTML text. The response contains `<button type="button">Add task</button>`. HTML text can't carry a JavaScript function, so the `(click)` handler isn't in it.
+2. **The browser shows the HTML.** The button is visible and looks finished, but clicking it does nothing yet, because no listener is attached.
+3. **The JavaScript downloads and Angular starts.** Without hydration, Angular would throw the server's HTML away and build every element again from scratch.
+4. **Angular hydrates.** It walks the existing DOM alongside its own template, recognizes that `<button>` as the one from the template, and keeps it. Then it attaches the `(click)` listener to that existing button.
+5. **The button works.** Clicking it now runs `addTask()`.
 
 ```mermaid
 flowchart TD
-    A[Application templates and initial data] --> B[Request-time SSR or build-time SSG]
+    A[Component templates and initial data] --> B[Rendered on the server or at build time]
     B --> C[HTML response]
-    C --> D[Browser can display content]
-    C --> E[Load client code and initial state]
-    E --> F[Hydrate existing DOM]
-    F --> G[Framework interactions and client updates]
+    C --> D[Browser shows the content]
+    C --> E[Browser loads the JavaScript]
+    E --> F[Angular hydrates the existing DOM]
+    F --> G[Clicks run component code]
 ```
 
-After startup, the application may use client-side navigation like a SPA. It may also continue using document navigation. Hydration alone does not decide that.
+Between steps 2 and 5, the button is visible but does nothing when clicked. Angular can record clicks that happen during that gap and replay them once hydration is done, a feature called **event replay**. Links and plain HTML forms already work during the gap, because the browser handles them itself.
 
-### Visibility and application readiness are different
-
-A page can display server-rendered text before its framework-specific controls are ready.
-
-Native links and forms may already work. A button whose only behavior is a JavaScript handler may still be waiting for hydration. Some frameworks capture early events and replay them when the relevant application code is ready; Angular supports event replay as part of its hydration tooling.
-
-Do not collapse these milestones into “the page loaded”:
+So "the page loaded" actually means four separate moments:
 
 1. The response starts arriving.
 2. Useful content becomes visible.
-3. Required client code becomes available.
-4. Application-specific interactions become ready.
+3. The JavaScript the page needs has downloaded.
+4. The page's own interactions, like Add task, actually work.
 
-SSR can improve the second milestone without eliminating the work required for the fourth.
+SSR moves moment 2 earlier. It doesn't remove the work needed for moment 4.
 
-## Hydration is work, not magic
+After hydration, the app can behave like an SPA, with clicks on internal links handled by the router. Hydration only covers how the first page comes to life.
 
-Hydration can avoid throwing away the server-produced DOM, but it still requires client code and initialization. In many applications, a substantial amount of application logic runs both outside the browser and in the browser.
+## What hydration costs
 
-That means you have two environments to support.
+With hydration, the same component code runs in two places: once on the server to make the HTML, and once in the browser to take it over. Code that's fine in one place can break in the other:
 
-| Concern            | What to watch                                                                           |
-| ------------------ | --------------------------------------------------------------------------------------- |
-| Browser-only APIs  | `window`, storage, and layout measurements may not be available during server rendering |
-| Initial data       | Server and client need a consistent starting point; avoid accidental duplicate requests |
-| Secrets            | Server rendering does not make serialized HTML, inline data, or client bundles private  |
-| Shared state       | Request-specific data must not leak through process-wide mutable state                  |
-| Output consistency | The initial DOM must match what the client expects to hydrate                           |
+- **Browser-only APIs.** `window`, `localStorage`, and measuring an element's size don't exist on the server. A component that reads `localStorage` while it's created throws during server rendering.
+- **Fetching data twice.** If the server fetches the tasks to render them, and the browser fetches them again when the app starts, the page makes the same request twice. Angular's `HttpClient` can pass the server's responses along in the HTML, so the browser reuses them instead.
+- **Secrets.** Everything in the HTML, including data embedded in it for hydration, is visible to the user in View Page Source. Rendering on the server doesn't make data private.
+- **Data shared between requests.** One server process handles many users' requests. A module-level variable like `let currentUser` is shared by all of them, so one user's request can end up showing another user's data.
+- **HTML that doesn't match.** Hydration only works if the browser's DOM matches what Angular expects from the template.
 
-### A timestamp can create a mismatch
+### A timestamp that doesn't match
 
-Imagine a template displaying a freshly generated timestamp.
+The last point is the easiest to trip over. Say the board's header shows "Last updated" with the current time, and the component reads the clock when it's created.
 
-The server renders at `10:00:00`. The client initializes at `10:00:01`. If both independently compute their initial value, they can disagree about the content to claim during hydration.
+The server renders at `10:00:00` and sends that. The browser starts the app at `10:00:01`, and the component reads the clock again. Now the HTML on screen says one thing and the component says another. Angular keeps the server's text and then updates it, so the time visibly jumps as soon as Angular takes over. The same happens if a value decides which `@if` branch shows: the content changes right after hydration, and the page can shift around.
 
-Other mismatch sources include random values, locale-dependent output, invalid HTML repaired by the browser, and scripts that rearrange the DOM before hydration.
+Random values and dates formatted in different time zones cause the same kind of jump. The fix is to make the first render produce the same output in both places: send the value from the server instead of computing it twice, format dates the same way in both places, and wait until the app is running in the browser before doing anything browser-only.
 
-The fix is usually not to hide the hydration error. It is to make the initial output deterministic: transfer the initial value, use consistent formatting, and delay genuinely browser-only updates until the appropriate lifecycle point.
+A mismatch in the HTML's *structure* is worse. Hydration walks the DOM expecting exactly the elements the template produced, so if elements are missing, added, or moved, Angular can't line them up. Hydration fails with a DOM mismatch error, such as `NG0500`, instead of quietly fixing it. Three things cause this:
 
-In Angular, direct DOM manipulation is a documented source of hydration problems. Reusing the server DOM requires agreement about the structure, including framework-generated nodes.
+- **Components that change the DOM directly** with browser APIs like `appendChild`, or by setting `innerHTML`, instead of through their templates. Angular's hydration guide names this as the most common cause.
+- **Invalid HTML that the browser repairs while reading it.** A `<div>` inside a `<p>` is one example: the browser closes the `<p>` early, so the DOM no longer has the shape the template described.
+- **Anything that edits the server's HTML before Angular starts**, such as a script that inserts elements, or a CDN that strips HTML comments. Angular leaves comments in the HTML to mark its own structure, so removing them breaks hydration too.
 
-## Islands and selective hydration
+The fix is to change the component so the server and the browser produce the same elements. Angular also has an `ngSkipHydration` attribute that makes one component throw away its server HTML and render from scratch, but its documentation calls that a last resort.
 
-Not every page needs a whole application to start in the browser.
+## Hydrating only part of a page
 
-Consider an article page with a search box and an interactive example. The article body is static content. The search and example are separate interactive areas.
+Hydration as described so far wakes up the whole page at once. But most of a `/guide` article is plain text that never needs JavaScript. Say the page has two interactive parts: a search box at the top, and a small "try it" demo of a keyboard shortcut. Loading and hydrating a whole application for two widgets is a lot of work for very little.
 
-An **islands architecture** lets those areas initialize independently while the surrounding page remains HTML.
+One answer is an **islands architecture**: the page is static HTML, with a few separate interactive "islands" that each load and start their own JavaScript.
 
 ```mermaid
 flowchart TD
-    P[Article page] --> H[Static header and article body]
-    P --> S[Search island: client code]
-    P --> X[Example island: client code]
+    P[Guide page] --> H[Static header and article text]
+    P --> S[Search island: its own JavaScript]
+    P --> X[Demo island: its own JavaScript]
 ```
 
-Astro documents client islands as UI components hydrated separately from the rest of the page. Client directives control which components receive client-side code and when they initialize.
+Astro, the tool this blog is built with, works this way. A component only gets JavaScript in the browser if you mark it with a client directive, such as `client:visible` to start it once it scrolls into view.
 
-This reduces the amount of framework JavaScript required for mostly-content pages. It also introduces boundaries: islands still need intentional state ownership and communication if they share behavior.
+The catch is that each island is its own small app. If the search box and the demo need to share something, like the selected theme, you wire that up yourself. So islands are worth it when the interactive pieces really are independent, and not worth it for splitting one small script into several.
 
-Selective, partial, and incremental hydration are related techniques, but their precise meaning differs by framework. The practical question remains:
+Angular has its own version of this idea, called **incremental hydration**. You wrap part of a template in a `@defer` block with a `hydrate` trigger. The server still renders that part to HTML, so it's visible straight away, but Angular only downloads its code and hydrates it when the trigger fires:
 
-> Which parts of this page actually need client application code, and when?
+```html
+@defer (hydrate on viewport) {
+  <shortcut-demo />
+}
+```
 
-Do not add islands merely to divide an already small script into more pieces. Use the boundary when the interaction has a meaningful independent owner.
+Here the demo shows up as server-rendered HTML, and Angular hydrates it once it scrolls into view. Other triggers include `hydrate on interaction`, which waits for a click or key press on it, and `hydrate never`, which leaves it as static HTML. Since Angular 22, incremental hydration is on by default when you enable hydration with `provideClientHydration()`.
 
-## Choosing per route
+Whichever tool you use, the question is the same: which parts of this page actually need JavaScript, and how soon?
 
-Take a site with four features:
+## Choosing per route in Angular
 
-| Route           | Requirement                             | Reasonable starting point                                                     |
-| --------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
-| `/articles/...` | Public content updated when published   | Static generation                                                             |
-| `/pricing`      | Public content changed infrequently     | Static generation or cached server rendering                                  |
-| `/account`      | Authenticated, user-specific content    | Server rendering with private caching rules, or client rendering behind login |
-| `/editor`       | Long-lived, interaction-heavy workspace | Client-rendered application; SSR only if it solves a concrete startup need    |
+The three routes have different needs, and nothing forces them to share one strategy:
 
-This is not a mandate for four frameworks. It is a reminder that one site's routes can have different requirements.
+| Route        | What it needs                                    | Strategy                                              |
+| ------------ | ------------------------------------------------ | ----------------------------------------------------- |
+| `/guide/...` | Same for everyone, changes when published        | Static generation                                     |
+| `/account`   | Different for each user, always current          | Server rendering, never cached for other users        |
+| `/board`     | Behind a login, used for a long time, many clicks | Client rendering, or SSR with hydration if startup is too slow |
 
-Angular's `@angular/ssr` supports route-level rendering choices. In an application already configured for server/hybrid rendering, a server-route file can express the policy:
+In Angular, you set this up with the `@angular/ssr` package. Running `ng add @angular/ssr` in an existing project, or `ng new --ssr` for a new one, creates a file called `src/app/app.routes.server.ts`. That file lists a rendering mode for each route.
 
 ```ts
-import { RenderMode, type ServerRoute } from "@angular/ssr";
+import { RenderMode, ServerRoute } from "@angular/ssr";
 
 export const serverRoutes: ServerRoute[] = [
   {
-    path: "articles",
+    path: "guide/:slug",
     renderMode: RenderMode.Prerender,
+    async getPrerenderParams() {
+      return [{ slug: "getting-started" }, { slug: "shortcuts" }];
+    },
   },
   {
     path: "account",
     renderMode: RenderMode.Server,
   },
   {
-    path: "editor",
+    path: "board",
     renderMode: RenderMode.Client,
+  },
+  {
+    path: "**",
+    renderMode: RenderMode.Server,
   },
 ];
 ```
 
-This fragment demonstrates rendering policy, not a complete application configuration. Parameterized prerendered routes also need a way to enumerate their build-time parameters. Angular's official server-rendering guide covers the providers, route registration, and deployment modes.
+Each `RenderMode` value maps to one of the strategies in this article:
 
-Frameworks such as Analog.js, Next.js, and Nuxt also support combinations of server and client rendering. Choose from verified framework capabilities after deciding the product requirements, not the other way around.
+- **`RenderMode.Prerender`** is static generation: Angular renders the page to an HTML file during the build.
+- **`RenderMode.Server`** is server-side rendering: Angular renders the page on the server for each request.
+- **`RenderMode.Client`** is client-side rendering: the server sends the nearly empty page, and the browser builds the content.
 
-### A compact comparison
+Here's what else to notice:
 
-| Approach            | Initial meaningful HTML                          | Main responsibility                          | Main tradeoff                                            |
-| ------------------- | ------------------------------------------------ | -------------------------------------------- | -------------------------------------------------------- |
-| Static/SSG          | Produced before the request                      | Build and deployment                         | Freshness and build scale                                |
-| Traditional SSR     | Produced during the request                      | Server and request-time data                 | Server latency, operations, caching isolation            |
-| Client rendering    | Produced in the browser                          | Client code and API                          | Startup cost and JavaScript dependency                   |
-| SSR/SSG + hydration | Produced outside the browser, enhanced inside it | Consistent server/build and client execution | Client startup plus environment and hydration complexity |
+- `guide/:slug` has a parameter, `:slug`, so the build can't guess which pages exist. `getPrerenderParams` returns the list of values to build, one HTML file each.
+- `**` matches every path not listed above, so any other route is rendered on the server.
+- The paths here must match routes in your normal Angular route configuration, `app.routes.ts`. This file only adds a rendering mode to each of them.
+- The CLI also creates `app.config.server.ts`, which registers this list with `provideServerRendering(withRoutes(serverRoutes))`. You don't need to change it.
 
-## Inspect the result, not the label
+The CLI also adds `provideClientHydration()` to `app.config.ts`, so pages rendered with `Prerender` or `Server` get hydrated in the browser. Angular's SSR guide covers the rest of the setup, including how to deploy the server.
 
-A framework's marketing page cannot tell you whether your particular route is performing well.
+Other frameworks, such as Next.js, Nuxt, and Analog, also let you mix strategies per route. Decide what each route needs first, and then check what your framework supports.
 
-For a real page:
+## Comparing the strategies
 
-1. **Inspect the document response.** Is the useful text present, or only a mounting point and loading UI?
-2. **Reload with JavaScript disabled.** What content and native behavior remain? Existing client-side state can otherwise hide the answer.
-3. **Test a direct deep link.** Do you receive the intended page and status code without first visiting the home page?
-4. **Use a slower device and network profile.** Measure the interval between visible content and usable interactions.
-5. **Inspect data loading.** Are server-fetched results reused, or immediately fetched again in the browser?
-6. **Check cache boundaries.** Public output can be shared; personalized output needs deliberate isolation.
+Here's the whole article in one table:
 
-SEO is more than putting text in HTML: URLs, status codes, metadata, links, and content quality still matter. First paint is also not the whole performance story; useful content and responsive interactions matter more than an early loading placeholder.
+| Strategy                    | When the HTML is made                         | Task board route         | What the browser still does                   | Main cost                                                  |
+| --------------------------- | --------------------------------------------- | ------------------------ | --------------------------------------------- | ---------------------------------------------------------- |
+| Static generation (SSG)     | At build time, before any request             | `/guide/...`             | Shows the HTML; runs any small scripts        | Changes need a rebuild; can't be personal                  |
+| Server-side rendering (SSR) | On the server, for each request               | `/account`               | Shows the HTML; forms and links work natively | A server to run; slow data delays the page; careful caching |
+| Client-side rendering (CSR) | In the browser, after the JavaScript runs     | `/board`                 | Downloads and runs the app, fetches data, builds the page | Slow start on weak devices; nothing shows if the JavaScript fails |
+| SSR or SSG with hydration   | On the server or at build time, then taken over in the browser | `/board`, if startup matters | Downloads the app and hydrates the existing HTML | Code must work in two places; visible before it's usable |
 
-## Takeaways
+A few points from the table are worth keeping:
 
-- Static generation and request-time SSR differ mainly in **when** HTML is produced.
-- Client rendering moves initial content creation onto the user's device.
-- SPA navigation and server rendering can coexist.
-- Hydration reuses initial DOM but still requires client-side work and consistency.
-- Interactivity does not inherently require a client framework: native HTML and small enhancement scripts are valid options.
-- Choose the smallest rendering model that meets the route's content, freshness, and interaction requirements.
+- Static generation and SSR differ in *when* the HTML is made: before any request, or during each one.
+- Client rendering moves the work of building the first content onto the user's device.
+- SSR and SPA navigation answer different questions, and one app can use both.
+- Hydration keeps the server's HTML but still needs the full JavaScript, and the two environments have to agree.
+- A page doesn't need a framework to be interactive. Links, forms, and small scripts go a long way.
+
+So pick the simplest strategy that gives each route what it needs.
+
+## Check what your page actually sends
+
+A framework's feature list can't tell you how one of your pages behaves. The browser can. For any page:
+
+1. **Look at the response.** Use View Page Source, or the Network panel in DevTools and the response for the page itself. Is the content in the HTML, or only an empty `<app-root>` and a loading message?
+2. **Reload with JavaScript turned off.** In Chrome's DevTools, open the command menu with Ctrl+Shift+P, or Cmd+Shift+P on a Mac, and run "Disable JavaScript". What content is left, and do links and forms still work?
+3. **Open a deep link directly.** Paste a URL like `/board` into a new tab. Do you get the right page and a `200` status, without visiting the home page first?
+4. **Slow everything down.** DevTools can throttle the network and CPU. How long is the gap between seeing the content and being able to use it?
+5. **Watch the data requests.** If the page was rendered on the server, does the browser fetch the same data again right after loading?
+6. **Check the cache rules.** Public pages can be cached for everyone. Pages with one user's data must never be served to anyone else.
+
+Getting the text into the HTML is only one part of **SEO**, search engine optimization, the work of making pages easy for search engines to find and rank. URLs, status codes, page titles, and links matter too. And showing a loading spinner early doesn't help much if the real content and buttons arrive much later.
+
+Now go back to the two View Page Source results from the start. The blog's source is full because its HTML was generated at build time. The Angular app's source is empty because its HTML is built in your browser, after the JavaScript runs. Every strategy in this article is a different answer to where and when that HTML gets made. Once the HTML reaches the browser, the [DOM and events article](/dump/blog/html-dom-and-events/) picks up what happens next.
 
 ## Sources and further reading
 
 - [Angular: server-side and hybrid rendering](https://angular.dev/guide/ssr)
 - [Angular: hydration, constraints, and event replay](https://angular.dev/guide/hydration)
+- [Angular: incremental hydration](https://angular.dev/guide/incremental-hydration)
 - [Astro: islands architecture](https://docs.astro.build/en/concepts/islands/)

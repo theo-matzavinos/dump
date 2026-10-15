@@ -1,80 +1,66 @@
 ---
-title: "Building components with clear ownership"
-description: "Use an extraction litmus, assign state owners, design typed inputs and outputs, and give edit drafts and projected content deliberate boundaries."
+title: "Splitting a task page into Angular components"
+description: "Decide which component holds each piece of state, connect components with typed inputs and outputs, keep an edit draft alive with linkedSignal, and wrap page content with a projected section frame."
 pubDate: "2026-10-06"
+updatedDate: "2026-10-15"
 tags:
   - angular
   - components
   - frontend
 ---
 
-A task row displays a title and a checkbox. An editor lets someone change that title without committing each keystroke. The task page must keep the list, filter, and remaining count consistent with the accepted task records.
+The task board can add, complete, and filter tasks. Now it needs a way to rename one. You click Edit on a task, type half of a new title, and then tick that task's checkbox, or switch the filter so the task drops out of the list. Should your half-typed title survive? And if you click Cancel instead, should the old title come back?
 
-These pieces need different responsibilities. Moving their markup into separate files does not, by itself, explain who may change a task, what cancelling means, or how long unsaved text should survive.
+Splitting the markup into more files doesn't answer those questions by itself. The answer comes from deciding which component holds each piece of data, which component is allowed to change it, and how long it lives. This article works through those decisions while it builds a task row that reports clicks to the page, an editor that keeps an unfinished draft, and a small frame that wraps content the page supplies.
 
-This article builds on the row from [Components + Tailwind](/dump/blog/frontend-evolution-styling/). It adds an editor and a small section with caller-supplied content. The examples use Angular 22.2.1 and the same Tailwind 4 styling setup; the styling article contains the shared dark/light palette and installation link.
-
-The [values and identity article](/dump/blog/values-references-and-identity/) explains object sharing and signal updates. The [behavior article](/dump/blog/frontend-evolution-behavior/) explains the task form, filtering, and count. Here the focus is the contract between components—not an exhaustive Angular API guide.
+You'll need the task board and its `TaskRow` component from the [styling article](/dump/blog/frontend-evolution-styling/) as a starting point, and the signals (`signal` and `computed`) from the [behavior article](/dump/blog/frontend-evolution-behavior/) to follow the state code. The examples use Angular 22.2.1. They leave out most Tailwind classes so the component code stays readable; if you're following the styling article's setup, keep its classes on the matching elements.
 
 ## Contents
 
-1. [Apply a litmus before extracting a component](#apply-a-litmus-before-extracting-a-component)
-2. [Give each piece of state an owner](#give-each-piece-of-state-an-owner)
-3. [Inputs describe what a component needs](#inputs-describe-what-a-component-needs)
-4. [Outputs report across the boundary](#outputs-report-across-the-boundary)
-5. [An edit draft needs a deliberate lifetime](#an-edit-draft-needs-a-deliberate-lifetime)
-6. [Projection lets the caller supply composition](#projection-lets-the-caller-supply-composition)
-7. [Prove the boundaries through their consumer](#prove-the-boundaries-through-their-consumer)
+1. [Decide which component holds each piece of state](#decide-which-component-holds-each-piece-of-state)
+2. [Pass a task into the row with an input](#pass-a-task-into-the-row-with-an-input)
+3. [Report the checkbox with an output](#report-the-checkbox-with-an-output)
+4. [Add editing, deleting, and details to the row](#add-editing-deleting-and-details-to-the-row)
+5. [Keep an unfinished title in an editor](#keep-an-unfinished-title-in-an-editor)
+6. [Wrap page content with a section frame](#wrap-page-content-with-a-section-frame)
+7. [Put the page together](#put-the-page-together)
+8. [When to extract a component](#when-to-extract-a-component)
 
-## Apply a litmus before extracting a component
+## Decide which component holds each piece of state
 
-A shorter template is not sufficient evidence that a component boundary helps. Splitting one understandable operation across several files can make it harder to follow.
+Before writing any component, list the data the page works with:
 
-Before extracting a piece, ask:
+- the tasks themselves, each with an `id`, a `title`, and a `done` flag
+- the filter choice (all, active, or completed)
+- which task is being edited, if any
+- the title someone is typing but hasn't saved yet
+- whether a row's extra details are expanded
 
-- **Can its responsibility be named?** “Task editor” explains a job. “The div around these three elements” only identifies markup.
-- **Do its parts belong together?** Structure, interaction, local state, or a meaningful lifetime can make a cohesive piece. Sharing a border color does not necessarily do so.
-- **Can its consumer describe the contract simply?** A task goes in; a requested change comes out. Passing the whole parent or many unrelated flags suggests that the boundary is unclear.
-- **Does the boundary reduce what must be understood together?** A useful component hides its own coordination. A component that only forwards several inputs and outputs may add navigation without adding responsibility.
+The tasks the list, filter, and remaining count all read from are the **accepted tasks**: the current saved version of each task, as opposed to an edit that's still in progress.
 
-This is a reasoning aid, not a score where a certain number of answers mandates extraction. Keep a piece inline when the proposed boundary only makes the file shorter. Extract when it creates an understandable responsibility, contract, or lifetime.
-
-Apply it to this interface:
-
-- **Task row:** its label, checkbox, title presentation, and row actions belong together. It receives a task and reports interactions. Reuse is useful, but cohesion also justifies the boundary.
-- **Task editor:** its draft, title field, save/cancel behavior, and creation/destruction belong together. That lifetime justifies a boundary even if only one editor is visible.
-- **A padding wrapper:** if it adds no useful contract or shared composition, ordinary markup and classes may be clearer.
-
-Repeated code is evidence to examine, not an automatic extraction trigger. A little duplication can reveal whether two pieces really share a concept before they acquire one configuration-heavy API.
-
-## Give each piece of state an owner
-
-The accepted task records are the data used by the list, filter, and count. They are the **canonical state**: the application's current accepted version, rather than an unfinished edit.
-
-For this example:
+Here's where each piece lives in this article's page. An arrow means the parent component passes a task down to the child. "Reports" means the child tells its parent that something happened, and the parent decides what to do about it.
 
 ```text
 TaskPage
-  owns accepted tasks, the filter, and which task is being edited
+  holds the accepted tasks, the filter, and which task is being edited
       │
       ├── task → TaskRow
-      │           owns whether its details are expanded
-      │           reports completion, edit, and deletion requests
+      │           holds whether its details are expanded
+      │           reports completion, edit, and delete clicks
       │
       └── task → TaskEditor
-                  owns an unfinished title draft
-                  reports a submitted title or cancellation
+                  holds the unfinished title draft
+                  reports a saved title or a cancel
 ```
 
-The remaining count and filtered list are derived from the tasks. They do not need separately writable copies that every operation must remember to synchronize.
+A useful rule of thumb: put each piece of state in the lowest component that sits above every component that reads it, and that lives at least as long as the state needs to. Here's how that plays out:
 
-A draft is different. It intentionally may disagree with the accepted title while someone types. The important distinction is not “all copies are bad”; it is whether the copy has an explicit purpose, owner, and point at which it becomes accepted.
+- **The remaining count and the filtered list** are calculated from the tasks with `computed`, so there's no separate copy that every change has to remember to update.
+- **Which task is being edited** lives in the page. The filter can remove a row from the list, and a removed row is destroyed along with anything it holds. The editor has to stay open when that happens, so the page holds the selection.
+- **The unfinished title** lives in the editor. It's allowed to differ from the accepted title while you type, and it only becomes the accepted title when you click Save. The editor is created when editing starts and destroyed when it ends, which is exactly how long the draft should live.
+- **Whether details are expanded** lives in the row. Only the row reads it, and losing it when the row disappears is fine.
 
-The page owns edit selection because the editor must remain open when filtering hides its row. Only one task is edited at a time. The row's details toggle can disappear with the row; an unfinished title should not disappear merely because the filter changed.
-
-State belongs where its consumers and lifetime require it—not automatically in the nearest component, a global store, or every component that receives the value.
-
-The shared task type stays small. Save it in `task.ts`:
+The shared task type is the one the styling article moved into `task.ts`:
 
 ```ts
 export interface Task {
@@ -84,27 +70,105 @@ export interface Task {
 }
 ```
 
-## Inputs describe what a component needs
+## Pass a task into the row with an input
 
-When the page renders a row, it supplies the task the row should display. It can also temporarily prevent another edit from starting:
+A component's **parent** is the component whose template uses its tag. The page's template will contain `<task-row>`, so the page is the row's parent, and the row is its **child**.
 
-```html
-<task-row
-  [task]="task"
-  [canEdit]="editingId() === undefined"
-  (doneChange)="setDone(task.id, $event, filterSelect)"
-  (editRequested)="startEditing(task.id)"
-  (deleteRequested)="removeTask(task.id, filterSelect)"
-/>
+The styling article's row already has an input and an output. This section and the next rebuild it one piece at a time, so you can see what each piece does.
+
+The row needs one thing from the page: the task to display. An **input** is a named value a parent passes into a child. Here's the smallest version of the row:
+
+```ts
+import { Component, input } from "@angular/core";
+import type { Task } from "./task";
+
+@Component({
+  selector: "task-row",
+  template: `
+    <label>
+      <input type="checkbox" [checked]="task().done" />
+      <span>{{ task().title }}</span>
+    </label>
+  `,
+})
+export class TaskRow {
+  readonly task = input.required<Task>();
+}
 ```
 
-This is a usage excerpt from the complete page below. The loop supplies `task`; `filterSelect` names the page's native select element.
+And here's how the page passes a task in, inside its `@for` loop over the visible tasks:
 
-The `[task]` binding supplies data to a named component **input**. The row declares that contract with `input.required<Task>()`. Calling `task()` reads the supplied value. A missing required input is a template-compilation error.
+```html
+<task-row [task]="task" />
+```
 
-`input(true)` supplies a default for `canEdit`. The row is normally editable; this particular consumer passes `false` while an editor is open. That is a concrete interaction policy, not a collection of speculative options or an authorization check.
+Notice three things:
 
-Save the row in `task-row.ts`:
+- `input.required<Task>()` declares an input named `task` that holds a `Task`. "Required" means every `<task-row>` must supply one. Leave out `[task]` and the template fails to compile.
+- An input is a read-only signal, so the row reads it by calling it: `task().title`.
+- In `[task]="task"`, the left side is the row's input name and the right side is the page's loop variable. The `/>` at the end closes the tag in one go, which Angular allows for component tags.
+
+The row now shows the right checkbox state, but ticking the checkbox only changes the checkbox on screen. Nothing tells the page, so the task's `done` value and the remaining count stay the same. The next section fixes that.
+
+### The row gets the page's object, not a copy
+
+The input signal has no `set` method, so the row can't replace the task it was given. It can still change that task's fields, though. Assigning `this.task().title = "x"` inside the row compiles fine, and it changes the same object the page holds in its `tasks` array, because passing an object to an input passes a reference to it rather than a copy. The [values and identity article](/dump/blog/values-references-and-identity/) explains why that kind of change also slips past the page's signals.
+
+So the row follows a rule that Angular doesn't enforce: it reads the task and reports what the user did. The page is the only component that changes tasks, and it does that by replacing task objects.
+
+## Report the checkbox with an output
+
+An **output** is a named event a child component sends to its parent. Add one to the row and emit it when the checkbox changes:
+
+```ts
+import { Component, input, output } from "@angular/core";
+import type { Task } from "./task";
+
+@Component({
+  selector: "task-row",
+  template: `
+    <label>
+      <input
+        #checkbox
+        type="checkbox"
+        [checked]="task().done"
+        (change)="doneChange.emit(checkbox.checked)"
+      />
+      <span>{{ task().title }}</span>
+    </label>
+  `,
+})
+export class TaskRow {
+  readonly task = input.required<Task>();
+  readonly doneChange = output<boolean>();
+}
+```
+
+The page listens with parentheses, the same syntax it uses for native events like `(change)`:
+
+```html
+<task-row [task]="task" (doneChange)="setDone(task, $event, filterSelect)" />
+```
+
+Here's what happens when you tick the checkbox:
+
+1. The browser fires a `change` event on the native checkbox.
+2. The row's `(change)` binding runs `doneChange.emit(checkbox.checked)`. `#checkbox` names the native input element, so the template can read its `checked` property.
+3. Angular calls the page's `(doneChange)` listener. There, `$event` is the boolean the row emitted, not a native DOM `Event`.
+4. The page's `setDone` method, unchanged from the board, replaces that task with a new object whose `done` value matches.
+5. The `tasks` signal changes, so the remaining count and the filtered list update, and the row receives the new task object through its input.
+
+Emitting only reports. If the page didn't listen to `(doneChange)`, step 4 would never happen: the checkbox would show a tick, but the task's `done` value and the remaining count would stay the same.
+
+### Outputs don't bubble
+
+If you've worked with DOM events, you might expect to catch every row's output on a surrounding element, the way a `click` bubbles up from a button to its parent `<ul>`. Angular outputs don't bubble. `(doneChange)` on the `<ul>` never fires. You listen on the `<task-row>` element itself.
+
+That also means a component sitting between the page and the row has to declare its own output and emit it again whenever the row's output fires. Doing that once is fine, but if a component in the middle does nothing except pass inputs down and outputs up, it's worth asking whether it should exist at all. The last section comes back to that question.
+
+## Add editing, deleting, and details to the row
+
+The row needs three more interactions: an Edit button, a Delete button, and a Details button that shows the task's ID. Here's the finished row, saved in `task-row.ts`:
 
 ```ts
 import { Component, input, output, signal } from "@angular/core";
@@ -112,63 +176,42 @@ import type { Task } from "./task";
 
 @Component({
   selector: "task-row",
-  host: { class: "block" },
   template: `
-    <div class="rounded-lg border border-line bg-surface p-3">
-      <div class="flex flex-wrap items-start gap-3">
-        <label class="flex min-w-0 grow basis-48 items-start gap-3">
-          <input
-            #checkbox
-            type="checkbox"
-            class="mt-1 size-4 shrink-0 accent-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            [checked]="task().done"
-            (change)="doneChange.emit(checkbox.checked)"
-          />
-          <span
-            class="min-w-0 break-words"
-            [class.line-through]="task().done"
-            [class.text-muted]="task().done"
-          >
-            {{ task().title }}
-          </span>
-        </label>
-        <div class="flex flex-wrap gap-2">
-          <button
-            type="button"
-            class="rounded border border-line px-3 py-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
-            [disabled]="!canEdit()"
-            [attr.aria-label]="'Edit ' + task().title"
-            (click)="editRequested.emit()"
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            class="rounded border border-line px-3 py-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            [attr.aria-expanded]="detailsOpen()"
-            [attr.aria-controls]="'task-details-' + task().id"
-            (click)="toggleDetails()"
-          >
-            Details
-          </button>
-          <button
-            type="button"
-            class="rounded border border-line px-3 py-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            [attr.aria-label]="'Delete ' + task().title"
-            (click)="deleteRequested.emit()"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-      <p
-        class="mt-3 text-sm text-muted"
-        [id]="'task-details-' + task().id"
-        [hidden]="!detailsOpen()"
-      >
-        Task identifier: {{ task().id }}
-      </p>
-    </div>
+    <label>
+      <input
+        #checkbox
+        type="checkbox"
+        [checked]="task().done"
+        (change)="doneChange.emit(checkbox.checked)"
+      />
+      <span>{{ task().title }}</span>
+    </label>
+    <button
+      type="button"
+      [disabled]="!canEdit()"
+      [attr.aria-label]="'Edit ' + task().title"
+      (click)="editRequested.emit()"
+    >
+      Edit
+    </button>
+    <button
+      type="button"
+      [attr.aria-expanded]="detailsOpen()"
+      [attr.aria-controls]="'task-details-' + task().id"
+      (click)="toggleDetails()"
+    >
+      Details
+    </button>
+    <button
+      type="button"
+      [attr.aria-label]="'Delete ' + task().title"
+      (click)="deleteRequested.emit()"
+    >
+      Delete
+    </button>
+    <p [id]="'task-details-' + task().id" [hidden]="!detailsOpen()">
+      Task identifier: {{ task().id }}
+    </p>
   `,
 })
 export class TaskRow {
@@ -179,95 +222,74 @@ export class TaskRow {
   readonly deleteRequested = output<void>();
   readonly detailsOpen = signal(false);
 
-  toggleDetails() {
+  toggleDetails(): void {
     this.detailsOpen.set(!this.detailsOpen());
   }
 }
 ```
 
-The row does not receive a parent instance, the full task collection, or methods for reaching into page state. Its local details toggle needs no round trip to the page.
+What to notice:
 
-### A read-only input does not freeze its object
+- **`canEdit` has a default.** `input(true)` declares an optional input that starts as `true`. The page passes `false` while an editor is open, which disables every Edit button so only one task is edited at a time.
+- **`editRequested` and `deleteRequested` carry no value.** `output<void>()` means `emit()` sends nothing. The page already knows which task each row shows, because it rendered the row from its own loop variable.
+- **`detailsOpen` stays in the row.** Clicking Details changes a signal inside the row. The page never hears about it, because nothing else needs to know.
+- **Some bindings use `attr.`** `[checked]` and `[disabled]` set properties on the DOM element. `[attr.aria-label]` sets an HTML attribute instead, which is how ARIA values are written.
+- **The ARIA attributes describe the buttons to screen readers.** Every row has a button labelled "Edit", so `aria-label` makes each one announce which task it edits, such as "Edit Read the DOM article". `aria-expanded` tells screen readers whether the details are currently shown, and `aria-controls` points to the `id` of the paragraph the button shows and hides.
 
-The input signal does not offer the row a `set(...)` method. That does not make the task object immutable. With this interface, assigning to `this.task().title` would still be legal TypeScript—and would mutate a shared object.
+The page now renders each row like this:
 
-Receiving an object neither copies it nor transfers ownership. Here the contract is that rows read tasks and report requests. The page applies accepted changes. That rule is an ownership decision; `input.required()` does not enforce it by freezing data.
+```html
+<task-row
+  [task]="task"
+  [canEdit]="editingId() === undefined"
+  (doneChange)="setDone(task, $event, filterSelect)"
+  (editRequested)="startEditing(task.id)"
+  (deleteRequested)="removeTask(task.id, filterSelect)"
+/>
+```
 
-## Outputs report across the boundary
+`editingId`, `startEditing`, and `removeTask` are new page members. They're added in [Put the page together](#put-the-page-together).
 
-The checkbox changes first. The row reads its native `checked` property and emits a boolean. The page's listener receives that boolean and decides how to update its tasks.
+## Keep an unfinished title in an editor
 
-An Angular **output** is the component's named event interface. `output<boolean>()` declares a payload type; `emit(...)` reports a value. In `(doneChange)`, `$event` is that value, not a native DOM `Event`.
+The simplest way to rename a task would be to type straight into the task object's `title`. But then every keystroke would change the accepted task immediately, and a Cancel button would have nothing to go back to.
 
-`editRequested` and `deleteRequested` carry no payload because the consumer already knows which task it rendered. Their names communicate specific interactions instead of a generic “something changed” event. The page decides whether and how to act on them.
+So the editor keeps a separate string, the **draft**, and only changes that. Clicking Save sends the draft to the page. Clicking Cancel sends nothing. The page stays the only component that changes tasks.
 
-Emitting does not automatically update canonical state. Without a listener applying the request, the model does not change. The native checkbox can temporarily show its own changed checked state; that alone is not an accepted task update or a new remaining count.
+Here's the lifetime the editor and its draft should have:
 
-Angular outputs also do not bubble through the DOM like native `click` events. Putting `(deleteRequested)` on a surrounding `<div>` does not subscribe to every row's output. Bind at the component that declares the output. A wrapper that needs to expose an interaction must deliberately declare and forward a contract—or stop being an unnecessary wrapper.
+1. Clicking Edit creates an editor and starts its draft from that task's title.
+2. Typing changes the draft, not the accepted task.
+3. Ticking the task's checkbox or changing the filter leaves the draft alone.
+4. Save updates the accepted title and closes the editor. Cancel closes it without updating anything.
+5. Closing destroys the editor. Opening another edit creates a fresh editor with a fresh draft.
 
-Forwarding once is not inherently wrong. The question from the litmus still applies: does the intermediate component own meaningful behavior, or merely make consumers follow another link?
+### Start the draft with linkedSignal
 
-## An edit draft needs a deliberate lifetime
+The draft needs to start from the task's title, and it also needs to change as you type. A plain `computed` can't be written to, and a plain `signal` doesn't know about the task. `linkedSignal` is both: you write to it with `set`, like a `signal`, and Angular recalculates it from other signals whenever they change, like a `computed`. A recalculation replaces whatever was last written.
 
-Typing into the shared task object's `title` would change accepted data immediately. A Cancel button could close the editor, but it could not undo that mutation merely by existing.
-
-Instead, the editor starts with a string draft and changes only that draft. Saving submits its value; cancelling submits no title. The page remains the owner of accepted records.
-
-The lifetime in this example is explicit:
-
-1. Selecting a task creates an editor instance and initializes its draft from that task.
-2. Typing changes the editor's draft, not the accepted task.
-3. Completion updates and filter changes do not replace the draft.
-4. Save updates the accepted title, then closes the editor. Cancel closes without updating it.
-5. Closing destroys the editor instance. Opening another edit creates a fresh instance with a fresh draft.
-
-The draft needs both an initial value and a reset rule: read the supplied task, keep the previous draft if it belongs to the same task ID, and otherwise start with the supplied title. Angular's `linkedSignal` expresses that writable dependent state without a method-based lifecycle hook.
-
-Save this component in `task-editor.ts`:
+Here's the first version of the editor, saved in `task-editor.ts`:
 
 ```ts
-import {
-  Component,
-  ElementRef,
-  afterNextRender,
-  input,
-  linkedSignal,
-  output,
-  viewChild,
-} from "@angular/core";
+import { Component, input, linkedSignal, output } from "@angular/core";
 import type { Task } from "./task";
 
 @Component({
   selector: "task-editor",
-  host: { class: "block" },
   template: `
-    <form class="space-y-3" (submit)="submitTitle($event, titleInput)">
-      <label for="draft-title" class="block font-medium">New task title</label>
+    <form (submit)="submitTitle($event, titleInput)">
+      <label for="draft-title">New task title</label>
       <input
         #titleInput
         id="draft-title"
         name="title"
         type="text"
         required
-        class="block w-full min-w-0 rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         [value]="draftTitle()"
         (input)="draftTitle.set(titleInput.value); titleInput.setCustomValidity('')"
       />
-      <div class="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          class="rounded-lg bg-accent px-4 py-2 font-medium text-page hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          Save title
-        </button>
-        <button
-          type="button"
-          class="rounded-lg border border-line px-4 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          (click)="cancelled.emit()"
-        >
-          Cancel
-        </button>
-      </div>
+      <button type="submit">Save title</button>
+      <button type="button" (click)="cancelled.emit()">Cancel</button>
     </form>
   `,
 })
@@ -275,32 +297,15 @@ export class TaskEditor {
   readonly task = input.required<Task>();
   readonly titleSubmitted = output<string>();
   readonly cancelled = output<void>();
-  readonly draftTitle = linkedSignal<Task, string>({
-    source: this.task,
-    computation: (task, previous) => {
-      if (previous?.source.id === task.id) {
-        return previous.value;
-      }
+  readonly draftTitle = linkedSignal(() => this.task().title);
 
-      return task.title;
-    },
-  });
-  readonly titleInput = viewChild.required<ElementRef<HTMLInputElement>>("titleInput");
-
-  constructor() {
-    afterNextRender(() => {
-      const inputElement = this.titleInput().nativeElement;
-      inputElement.focus();
-    });
-  }
-
-  submitTitle(event: SubmitEvent, inputElement: HTMLInputElement) {
+  submitTitle(event: SubmitEvent, titleInput: HTMLInputElement): void {
     event.preventDefault();
     const title = this.draftTitle().trim();
 
     if (title === "") {
-      inputElement.setCustomValidity("Enter a task title.");
-      inputElement.reportValidity();
+      titleInput.setCustomValidity("Enter a task title.");
+      titleInput.reportValidity();
       return;
     }
 
@@ -309,47 +314,110 @@ export class TaskEditor {
 }
 ```
 
-Declaring this linked signal passes functions; it does not immediately read the required input. The template's first `draftTitle()` read computes the initial title after Angular supplies `task`. The resulting signal remains writable, so typing still uses `draftTitle.set(...)`.
+What to notice:
 
-In this form, `source` supplies the task to the computation. On a later input change, `previous.source` is the task used for the previous computation, and `previous.value` is the current draft—including any local edits. On the first computation, there is no previous value. The explicit `<Task, string>` types describe the source and draft value.
+- `linkedSignal(() => this.task().title)` starts the draft from the task's title, and recalculates it whenever `task` changes.
+- `[value]="draftTitle()"` puts the draft into the text field, and `(input)` writes each keystroke back with `draftTitle.set(...)`.
+- Save emits the trimmed draft through `titleSubmitted`. Cancel emits `cancelled` with no value.
+- The empty-title check uses the same browser validation as the board's add form. The [forms article](/dump/blog/forms-and-validation/) covers validation in depth.
 
-The native form keeps the existing basic title validation. Detailed validation and form-state design belong to the forms article.
+### Ticking the checkbox wipes the draft
 
-For focus, `viewChild` finds the element named `#titleInput` in the editor's own template. `ElementRef.nativeElement` provides the native input. `afterNextRender`, registered in the constructor, schedules the focus operation after Angular renders the page. It does not initialize or synchronize the draft. These are separate jobs.
+This version has a bug. Open the editor for "Read the DOM article", change the field to "Read the DOM notes", and then tick that task's checkbox in the list. The field jumps back to "Read the DOM article". Here's why:
 
-### Resetting is an ownership policy
+1. The row emits `doneChange`, and the page's `setDone` replaces the task with a new object, `{ ...task, done: true }`.
+2. The page passes the task being edited to the editor's `task` input, so the editor receives that new object.
+3. `draftTitle` reads `this.task()`, so it recalculates. It returns the new object's `title`, which is the accepted title. Your typing is gone.
 
-The simple `linkedSignal(() => this.task().title)` would reset the draft when the task input object is replaced—even if only `done` changed. Choosing this API does not automatically choose the right reset policy.
+The draft should only start over when the editor switches to a different task. When the same task comes back as a new object, the draft should keep what you typed.
 
-Here the computation compares task IDs and returns `previous.value` for the same task. If the page replaces that task object after a completion change, the existing editor receives the new input without losing unfinished text.
+### Keep the draft for the same task
 
-That is intentional here. The editor changes a title; the page applies it to the current record, preserving its current completion value. The application has no server or competing title editor. Adding either would require an explicit conflict/reset policy, not an automatic copy on every input change.
+The longer form of `linkedSignal` takes an object with two properties: a `source` signal to watch, and a `computation` function that receives the new source value plus the result of the last calculation. Replace the `draftTitle` line with this:
 
-Supplying a different task ID would start a draft from that task's title. This page still disables other Edit buttons until Save or Cancel closes the current editor, so switching tasks cannot silently discard an unfinished edit. The `@if` below destroys the old instance before another edit begins; a fresh instance starts from the accepted title even when the same task is reopened.
+```ts
+readonly draftTitle = linkedSignal<Task, string>({
+  source: this.task,
+  computation: (task, previous) => {
+    if (previous !== undefined && previous.source.id === task.id) {
+      return previous.value;
+    }
 
-Rows have a different lifetime. Their local details state survives replacement of a task record with the same ID because the list tracks `task.id`. If filtering removes a row from the rendered list, that row instance is destroyed; Details starts closed when it is rendered again. The editor stays open because it is outside that filtered list.
+    return task.title;
+  },
+});
+```
 
-Component-local state is not permanent state. This demonstration is in memory; a page reload resets it.
+The `previous` argument has two fields:
 
-## Projection lets the caller supply composition
+- `previous.source` is the task the computation saw last time.
+- `previous.value` is the draft's current value, including anything you typed with `set`.
 
-A page sometimes needs the same section frame around different content. The frame owns the arrangement; the caller owns the actual heading, actions, and body. Reconstructing all that content through title strings, button flags, and callback options would give the frame responsibilities it does not need.
+On the very first calculation there's no last time, so `previous` is `undefined`. The `<Task, string>` part gives the source type and the draft type; Angular needs both written out when the computation uses `previous`.
 
-The caller can instead write ordinary markup between the section component's opening and closing tags. The section marks where that markup belongs. Angular calls this **content projection**.
+Here's the same scenario with the fix, step by step:
 
-Save the small frame in `task-section.ts`:
+1. You click Edit. The page creates the editor and passes "Read the DOM article" into its `task` input.
+2. The template reads `draftTitle()` for the first time. `previous` is `undefined`, so the computation returns `task.title`, "Read the DOM article".
+3. You change the field to "Read the DOM notes". Each keystroke calls `draftTitle.set(...)`.
+4. You tick the checkbox. The page replaces the task, and the editor's `task` input receives the new object. The computation runs again: `previous.source.id` is `1` and `task.id` is `1`, so it returns `previous.value`, "Read the DOM notes". Your draft survives.
+5. You click Save. The editor emits "Read the DOM notes", and the page renames the task. The task keeps `done: true`, because the page copies the current task and only replaces its title.
+
+### One edit at a time
+
+If the editor's `task` input switched to a task with a different ID, the computation would start a new draft from that task's title. That would silently throw away an unfinished edit, so the page prevents it: while an editor is open, every row's Edit button is disabled through `canEdit`.
+
+When you click Save or Cancel, the page destroys the editor. Clicking Edit again creates a new editor whose draft starts from the accepted title, even for the same task.
+
+This rule is enough here because nothing else changes a title while you type. A page that also received title changes from a server would need its own rule for what happens to a draft when that happens.
+
+### How long each piece of state lives
+
+The row and the editor live for different lengths of time:
+
+- The list renders rows with `@for (...; track task.id)`. Because rows are matched by ID, a row keeps its instance, and its open details, when the page replaces its task with a new object that has the same ID.
+- When the filter removes a task from the visible list, its row is destroyed. If the task comes back into view, a new row is created, and Details starts closed again.
+- The editor sits outside the filtered list, so filtering never destroys it, and the draft survives.
+
+All of this state is in memory. Reloading the page starts over from the two sample tasks.
+
+### Move focus into the editor
+
+When the editor appears, keyboard and screen reader users should land in its text field rather than having to find it. That takes three more pieces of Angular. Add `ElementRef`, `afterNextRender`, and `viewChild` to the editor's import list, then add these members to the class:
+
+```ts
+readonly titleInput = viewChild.required<ElementRef<HTMLInputElement>>("titleInput");
+
+constructor() {
+  afterNextRender(() => {
+    const inputElement = this.titleInput().nativeElement;
+    inputElement.focus();
+  });
+}
+```
+
+Here's what each piece does:
+
+- `viewChild.required(...)` finds the element marked `#titleInput` in the editor's own template. It returns an `ElementRef`, a small wrapper whose `nativeElement` property is the real `<input>`.
+- The constructor runs when Angular creates the editor instance. At that moment, Angular hasn't created the template's elements yet, so there's no input to focus.
+- `afterNextRender` registers a callback that runs once, after Angular next finishes updating the page. By then the input exists. Angular needs `afterNextRender` to be called while it's creating the component, which is why the call sits in the constructor.
+
+## Wrap page content with a section frame
+
+The task list and the editor both need the same frame: a header with a heading on one side and a few actions on the other, followed by the main content. You could build that frame with inputs for the heading text, the heading level, the button labels, and the button handlers. But the frame would end up recreating markup the page can already write.
+
+Instead, the page writes ordinary markup between the frame's opening and closing tags, and the frame marks where that markup goes. Angular calls this **content projection**. Save the frame in `task-section.ts`:
 
 ```ts
 import { Component, input } from "@angular/core";
 
 @Component({
   selector: "task-section",
-  host: { class: "block" },
   template: `
-    <section class="mb-6" [attr.aria-labelledby]="labelledBy()">
-      <header class="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <section [attr.aria-labelledby]="labelledBy()">
+      <header class="flex flex-wrap items-start justify-between gap-3">
         <ng-content select="[data-section-heading]" />
-        <div class="flex flex-wrap gap-2">
+        <div>
           <ng-content select="[data-section-actions]" />
         </div>
       </header>
@@ -362,35 +430,45 @@ export class TaskSection {
 }
 ```
 
-The selected placeholders receive direct content whose static attributes match their selectors. The unselected placeholder receives the remaining content. The `data-section-*` names are this example's conventions, not Angular input properties.
+The header keeps its Tailwind classes because arranging the heading and the actions side by side is the frame's whole job.
 
-`<ng-content>` is a compiler placeholder, not a DOM element that creates another wrapper. Any wrappers come from the section's actual template, such as its `<header>` and action `<div>`.
+Here's how the page uses it for the editor:
 
-The required `labelledBy` value points the section's accessible name at the caller-supplied heading ID. It supplies a value; projection supplies the heading element itself. The page can choose an `<h1>` for its task list and an `<h2>` for its editor without asking the frame to manufacture tags from configuration.
+```html
+@if (editingTask(); as task) {
+  <task-section labelledBy="editor-heading">
+    <h2 data-section-heading id="editor-heading">Edit task {{ task.id }}</h2>
+    <button data-section-actions type="button" (click)="removeTask(task.id, filterSelect)">
+      Delete task
+    </button>
+    <task-editor
+      [task]="task"
+      (titleSubmitted)="renameTask(task.id, $event, filterSelect)"
+      (cancelled)="closeEditor(filterSelect)"
+    />
+  </task-section>
+}
+```
 
-This example uses the frame for two real regions. It shares a heading/actions/body arrangement, not task editing logic. The extraction litmus still applies: if there were only one trivial wrapper and no useful shared arrangement, keeping it inline would be reasonable. Projection is a capability, not a requirement to invent a container library.
+What to notice:
 
-### Projected bindings still belong to their caller
+- **Each `<ng-content>` is a slot.** `select` takes a CSS selector, and `[data-section-heading]` matches elements that have that attribute. So the `<h2>` goes into the heading slot and the button goes into the actions slot. The `data-section-*` names are this example's own; any attribute would work.
+- **Anything that matches no `select` goes into the plain `<ng-content />`.** Here that's the editor.
+- **`<ng-content>` isn't an element.** Angular replaces it at build time with the projected content, so it adds nothing to the DOM. The `<header>` and the actions `<div>` come from the frame's own template.
+- **`labelledBy="editor-heading"` has no brackets**, so it passes the plain string `editor-heading` to the input. The frame puts it in `aria-labelledby`, which tells screen readers to name the section with the text of the heading that has that `id`.
+- **`@if (editingTask(); as task)`** renders the block only while a task is being edited, and `as task` names that task so the block can use it.
 
-The editor section below contains a projected Delete button. Its `task.id` expression and click handler are declared in `TaskPage`, so they use that page's context. Rendering the button inside `TaskSection` does not move its bindings into the section class or transfer ownership of the task.
+### Projected markup uses the page's data and methods
 
-That distinction matters when reading a template: the component around some content need not be the component that owns its data and handlers.
+The Delete button renders inside `TaskSection`, but it's written in the page's template. So `task.id` and `removeTask(...)` come from the page. `TaskSection` has no `task` and no `removeTask` method, and it doesn't need them. The same goes for `{{ task.id }}` in the heading.
 
-### Hiding a placeholder is not lazy creation
+When you read a template, the component that wraps some content isn't necessarily the one that supplies its data and handlers. Look at whose template the markup is written in.
 
-A projection placeholder does not give the receiving component control over whether caller-authored content is created. Angular creates projected content even when a receiving placeholder is hidden; putting the placeholder inside an `@if` is not a reliable way to defer that work.
+Angular always creates projected content, even if the frame hides its `<ng-content>`. That's why the page wraps the whole section in its own `@if`: with no task being edited, the editor isn't created at all, and closing the editor destroys it along with its draft.
 
-In this example, the page's `@if` surrounds the entire editor section and its caller-authored editor. With no selection, that branch is not created. Closing it destroys the editor and its draft. That is different from creating an editor and merely hiding where it is projected.
+## Put the page together
 
-When a container must choose when to instantiate caller-supplied content, Angular has template-fragment mechanisms. They are not needed for this section's simple arrangement and are outside this article's scope.
-
-## Prove the boundaries through their consumer
-
-The complete page brings the contracts together. Compared with the earlier task board, it adds selected edit state and owner methods; it does not distribute writable task collections among the children.
-
-**Example presentation:** The page's class and long template are shown in separate files below to make each block easier to follow.
-
-To run the example as presented, save its class in `task-page.ts` and its template in `task-page.html`, then bootstrap `TaskPage` in place of the earlier `TaskBoard`. The sample starts with two task records so the component boundaries are immediately visible.
+The page is the board from the styling article with a few additions, renamed to `TaskPage` in `task-page.ts`. Here's the top of the class, with the template left out until further down:
 
 ```ts
 import { Component, computed, signal } from "@angular/core";
@@ -399,44 +477,21 @@ import { TaskEditor } from "./task-editor";
 import { TaskRow } from "./task-row";
 import { TaskSection } from "./task-section";
 
+type TaskFilter = "all" | "active" | "completed";
+
 @Component({
   selector: "task-page",
   imports: [TaskEditor, TaskRow, TaskSection],
-  templateUrl: "./task-page.html",
+  template: `...`,
 })
 export class TaskPage {
   readonly tasks = signal<Task[]>([
     { id: 1, title: "Read the DOM article", done: false },
     { id: 2, title: "Review the CSS layout", done: false },
   ]);
-  readonly filter = signal<"all" | "active" | "completed">("all");
+  readonly filter = signal<TaskFilter>("all");
   readonly editingId = signal<number | undefined>(undefined);
   private nextId = 3;
-
-  readonly remaining = computed(() => {
-    let count = 0;
-    for (const task of this.tasks()) {
-      if (!task.done) {
-        count++;
-      }
-    }
-    return count;
-  });
-
-  readonly visibleTasks = computed(() => {
-    const filter = this.filter();
-    const visible: Task[] = [];
-    for (const task of this.tasks()) {
-      if (filter === "active" && task.done) {
-        continue;
-      }
-      if (filter === "completed" && !task.done) {
-        continue;
-      }
-      visible.push(task);
-    }
-    return visible;
-  });
 
   readonly editingTask = computed(() => {
     const id = this.editingId();
@@ -448,218 +503,169 @@ export class TaskPage {
     return undefined;
   });
 
-  addTask(event: SubmitEvent, inputElement: HTMLInputElement) {
-    event.preventDefault();
-    const title = inputElement.value.trim();
-    if (title === "") {
-      inputElement.setCustomValidity("Enter a task title.");
-      inputElement.reportValidity();
-      return;
-    }
-    this.tasks.set([...this.tasks(), { id: this.nextId++, title, done: false }]);
-    inputElement.value = "";
-    inputElement.setCustomValidity("");
-    inputElement.focus();
-  }
-
-  setFilter(value: string) {
-    if (value !== "all" && value !== "active" && value !== "completed") {
-      throw new Error("Unknown task filter.");
-    }
-    this.filter.set(value);
-  }
-
-  setDone(id: number, done: boolean, filterSelect: HTMLSelectElement) {
-    const updated = this.tasks().map((task) => {
-      if (task.id === id) {
-        return { ...task, done };
-      }
-
-      return task;
-    });
-    this.tasks.set(updated);
-
-    const hiddenByActiveFilter = this.filter() === "active" && done;
-    const hiddenByCompletedFilter = this.filter() === "completed" && !done;
-    if (hiddenByActiveFilter || hiddenByCompletedFilter) {
-      filterSelect.focus();
-    }
-  }
-
-  startEditing(id: number) {
-    this.editingId.set(id);
-  }
-
-  renameTask(id: number, title: string, filterSelect: HTMLSelectElement) {
-    const updated = this.tasks().map((task) => {
-      if (task.id === id) {
-        return { ...task, title };
-      }
-
-      return task;
-    });
-    this.tasks.set(updated);
-    this.closeEditor(filterSelect);
-  }
-
-  closeEditor(filterSelect: HTMLSelectElement) {
-    this.editingId.set(undefined);
-    filterSelect.focus();
-  }
-
-  removeTask(id: number, filterSelect: HTMLSelectElement) {
-    const kept = this.tasks().filter((task) => task.id !== id);
-    this.tasks.set(kept);
-    if (this.editingId() === id) {
-      this.editingId.set(undefined);
-    }
-    filterSelect.focus();
-  }
+  // remaining, visibleTasks, addTask, setFilter, and setDone stay as they were in the board.
 }
 ```
 
-The owner updates current records rather than mutating a child-supplied object. Renaming preserves the record's current `done` value. Deleting the edited task also ends its editor; a draft cannot be saved back into a record this page has removed.
+What's new:
 
-```html
-<main class="mx-auto max-w-2xl px-4 py-8">
-  <task-section labelledBy="tasks-heading">
-    <h1 data-section-heading id="tasks-heading" class="text-3xl font-semibold">Task notes</h1>
-    <button
-      data-section-actions
-      type="button"
-      class="rounded-lg border border-line px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-      (click)="setFilter('all'); filterSelect.focus()"
-    >
-      Show all tasks
-    </button>
+- The page starts with two sample tasks, so the rows and the editor have something to show, and `nextId` starts after them.
+- `editingId` holds the ID of the task being edited, or `undefined` when nothing is.
+- `editingTask` looks that ID up in the current tasks. Whenever the page replaces the task, `editingTask` returns the new object, which is how the editor's `task` input receives it.
 
-    <form class="mb-6 space-y-2" (submit)="addTask($event, titleInput)">
-      <label for="task-title" class="block font-medium">Task title</label>
-      <div class="flex flex-wrap gap-2">
-        <input
-          #titleInput
-          id="task-title"
-          name="title"
-          type="text"
-          required
-          class="min-w-0 grow basis-48 rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          (input)="titleInput.setCustomValidity('')"
-        />
-        <button
-          type="submit"
-          class="rounded-lg bg-accent px-4 py-2 font-medium text-page hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          Add task
-        </button>
-      </div>
-    </form>
+Then add the methods the row and the editor's outputs call:
 
-    <label for="task-filter" class="mb-2 block font-medium">Show tasks</label>
-    <select
-      #filterSelect
-      id="task-filter"
-      class="rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-      [value]="filter()"
-      (change)="setFilter(filterSelect.value)"
-    >
-      <option value="all">All</option>
-      <option value="active">Active</option>
-      <option value="completed">Completed</option>
-    </select>
-    <p class="my-4" aria-live="polite">Remaining tasks: {{ remaining() }}</p>
-    @if (editingTask()) {
-    <p class="mb-4 text-muted">Save or cancel the current edit before starting another.</p>
-    }
-    <ul id="task-list" class="space-y-2" role="list">
-      @for (task of visibleTasks(); track task.id) {
-      <li>
-        <task-row
-          [task]="task"
-          [canEdit]="editingId() === undefined"
-          (doneChange)="setDone(task.id, $event, filterSelect)"
-          (editRequested)="startEditing(task.id)"
-          (deleteRequested)="removeTask(task.id, filterSelect)"
-        />
-      </li>
+```ts
+startEditing(id: number): void {
+  this.editingId.set(id);
+}
+
+renameTask(id: number, title: string, filterSelect: HTMLSelectElement): void {
+  this.tasks.update((current) => {
+    const next: Task[] = [];
+    for (const task of current) {
+      if (task.id === id) {
+        next.push({ ...task, title });
+      } else {
+        next.push(task);
       }
-    </ul>
-    <p class="text-muted" [hidden]="visibleTasks().length > 0">No tasks to show.</p>
-  </task-section>
+    }
+    return next;
+  });
 
-  @if (editingTask(); as task) {
-  <task-section labelledBy="editor-heading">
-    <h2 data-section-heading id="editor-heading" class="text-xl font-semibold">
-      Edit task {{ task.id }}
-    </h2>
-    <button
-      data-section-actions
-      type="button"
-      class="rounded-lg border border-line px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-      (click)="removeTask(task.id, filterSelect)"
-    >
-      Delete edited task
-    </button>
-    <task-editor
-      [task]="task"
-      (titleSubmitted)="renameTask(task.id, $event, filterSelect)"
-      (cancelled)="closeEditor(filterSelect)"
-    />
-  </task-section>
+  this.closeEditor(filterSelect);
+}
+
+closeEditor(filterSelect: HTMLSelectElement): void {
+  this.editingId.set(undefined);
+  filterSelect.focus();
+}
+
+removeTask(id: number, filterSelect: HTMLSelectElement): void {
+  this.tasks.update((current) => {
+    const next: Task[] = [];
+    for (const task of current) {
+      if (task.id !== id) {
+        next.push(task);
+      }
+    }
+    return next;
+  });
+
+  if (this.editingId() === id) {
+    this.editingId.set(undefined);
   }
-</main>
+  filterSelect.focus();
+}
 ```
 
-Use `<task-page></task-page>` in the host document and bootstrap the new page:
+What to notice:
+
+- `renameTask` copies the current task with `...task` and replaces only `title`, so a task you ticked while editing stays done.
+- Deleting the task that's being edited also closes the editor, so a draft can never be saved into a task the page has removed.
+- Save, Cancel, and Delete all remove the button that was just clicked, either with its row or with the editor. Moving focus to the filter keeps keyboard users somewhere useful instead of losing focus to the top of the page.
+
+The template has two sections inside `<main>`. The first is the task list, now wrapped in `<task-section>` with the filter as its action:
+
+```html
+<main>
+  <task-section labelledBy="tasks-heading">
+    <h1 data-section-heading id="tasks-heading">Task notes</h1>
+    <div data-section-actions>
+      <label for="task-filter">Show tasks</label>
+      <select
+        #filterSelect
+        id="task-filter"
+        [value]="filter()"
+        (change)="setFilter(filterSelect.value)"
+      >
+        <option value="all">All</option>
+        <option value="active">Active</option>
+        <option value="completed">Completed</option>
+      </select>
+    </div>
+
+    <!-- The add-task form from the board goes here, unchanged. -->
+
+    <p aria-live="polite">Remaining tasks: {{ remaining() }}</p>
+    @if (editingTask()) {
+      <p>Save or cancel the current edit before starting another.</p>
+    }
+    <ul id="task-list" role="list">
+      @for (task of visibleTasks(); track task.id) {
+        <li>
+          <task-row
+            [task]="task"
+            [canEdit]="editingId() === undefined"
+            (doneChange)="setDone(task, $event, filterSelect)"
+            (editRequested)="startEditing(task.id)"
+            (deleteRequested)="removeTask(task.id, filterSelect)"
+          />
+        </li>
+      }
+    </ul>
+    <p [hidden]="visibleTasks().length > 0">No tasks to show.</p>
+  </task-section>
+```
+
+The second is the editor section from [Wrap page content with a section frame](#wrap-page-content-with-a-section-frame). Put it after the list section, then close `</main>`. Because the editor section sits outside the `@for` loop, filtering the list never touches it.
+
+`#filterSelect` is declared inside the first section, but the editor section can still use it. A template reference declared outside any `@if` or `@for` block is visible everywhere in that template, including inside those blocks. Markup between a component's tags, like the content of `<task-section>`, still counts as part of the page's template.
+
+Finally, in the application's entry point, bootstrap `TaskPage` instead of `TaskBoard`, and change the host page's `<task-board></task-board>` to `<task-page></task-page>`:
 
 ```ts
 import { bootstrapApplication } from "@angular/platform-browser";
 import { TaskPage } from "./task-page";
 
-bootstrapApplication(TaskPage);
+await bootstrapApplication(TaskPage);
 ```
-
-The page template places the editor section after the filtered list, not inside a row. The form receives focus on creation. Save, Cancel, and deletion return focus to the existing filter control rather than leave it on a removed element. The native labels, checkbox interaction, live count, and list role remain part of the interface; component extraction does not supply them automatically.
 
 ### Trace one save
 
+Here's the whole rename, from click to updated list:
+
 ```text
 Edit button → row emits editRequested
-             → page sets editingId
-             → @if creates editor → first draftTitle() read starts its draft
+            → page sets editingId
+            → @if creates the editor → first draftTitle() read starts the draft
 Typing      → editor changes draftTitle only
 Save title  → editor emits titleSubmitted(string)
-             → page replaces the current task's title
-             → page clears editingId
-             → editor is destroyed; rows receive the accepted task
+            → page replaces the task with a renamed copy
+            → page clears editingId
+            → @if destroys the editor; the row receives the renamed task
 ```
 
-The section arranges the content but does not decide any of those task changes. The row and editor report interactions; the feature owner applies them.
+The section frame never decides anything along the way. The row and the editor report what the user did, and the page changes the tasks.
 
-This is a useful final form of the extraction litmus: read the consumer and trace one operation. If identifying who reads, who changes, and who decides requires inspecting several unrelated wrappers, the decomposition has not made the feature clearer.
+## When to extract a component
 
-### Inputs and outputs are not an endless forwarding requirement
+A file getting long is a reason to look, not a reason to split. Pulling a chunk of template into its own component sometimes makes the page easier to follow, and sometimes it just means you jump between three files to follow one click. These questions help you tell which:
 
-When several distant consumers genuinely share feature state, a feature-owned object supplied through dependency injection can be appropriate. That gives those consumers access to the same owner without passing every interaction through a chain of presentation components.
+- **Can you say in one sentence what goes in and what comes out?** For the row: a task goes in, and done, edit, and delete clicks come out. If a split would need the whole parent component passed in, or a long list of unrelated flags, it's in the wrong place.
+- **Do its parts belong together?** The editor's draft, text field, Save button, and Cancel button are created together, used together, and destroyed together. That shared lifetime is a good reason for a component, even though only one editor ever shows at a time.
+- **Does it handle something so the parent doesn't have to?** The row handles its details toggle completely. A component that only passes inputs down and outputs up adds a file without taking any work off the parent.
+- **Can you still trace one operation?** Follow one click, the way the trace above follows a save. If finding which component reads the data, which one changes it, and which one decides means opening several components that only pass things along, the split made the feature harder to follow.
 
-It is not permission to move every row toggle into an application-wide store. Choose the provider scope and lifetime to match the feature. The [dependency injection article](/dump/blog/angular-dependency-injection/) explains that mechanism; this example's direct parent/child contracts do not need another state layer.
+A component that only adds some padding usually fails these questions, so a `<div>` with a class is clearer. Repeated markup is worth noticing, but a little duplication is fine until you can see what the repeated pieces actually share.
+
+When components far apart in the tree genuinely need the same feature state, passing it through every component in between gets tedious. Angular's dependency injection can give those components a shared object instead; the [dependency injection article](/dump/blog/angular-dependency-injection/) explains how. This page's parents and children are directly connected, so inputs and outputs are enough.
+
+That also answers the question from the start. Your half-typed title survives ticking the checkbox because `draftTitle` keeps its value while the task ID stays the same. It survives a filter change because the editor lives outside the filtered list. And Cancel brings back the old title because typing only ever changed the editor's draft. The page's task didn't change until you clicked Save.
 
 ## Closing check
 
-1. What makes the editor a useful extraction even if only one is rendered?
-2. Why can the row read a task without owning or copying it?
-3. What changes automatically when an output is emitted, and what requires an owner listener?
-4. Why does cancelling preserve the accepted title here?
-5. Why does filtering away a row reset Details but preserve the editor draft?
-6. Whose context supplies the projected Delete button's `task.id` and handler?
+1. Why does the page, not the row, hold which task is being edited?
+2. The row emits `doneChange`, but the page has no `(doneChange)` listener. What happens to the task and the remaining count?
+3. Why does `linkedSignal(() => this.task().title)` lose your draft when you tick the checkbox, and what does the fixed version compare?
+4. The projected Delete button calls `removeTask(task.id, ...)`. Where do `task` and `removeTask` come from?
 
 Check your reasoning:
 
-- The editor has cohesive behavior and an intentional draft lifetime, not merely several reusable declarations.
-- An input supplies a value; a shared object reference does not transfer ownership or create a copy.
-- Emission notifies subscribed listeners. The page's listener performs the task update; the output itself does not update its collection.
-- Typing changes a separate string draft. Cancel closes the editor without applying that draft.
-- The row is created by the filtered loop; the editor is created by a separate page-owned selection branch.
-- The declaring page owns those bindings even though the section determines where the button renders.
+- The filter can destroy the row. The editor has to stay open when that happens, so the selection lives in the page, which outlives every row.
+- Nothing changes. The checkbox shows a tick, but only a listener on the page can replace the task, so `done` and the count stay the same.
+- Ticking the checkbox gives the editor a new task object, and the simple version recalculates from it, returning the accepted title. The fixed version compares `previous.source.id` with the new task's `id` and keeps `previous.value` when they match.
+- From the page. The button is written in the page's template, so it uses the page's `@if` variable and the page's method, even though it renders inside `TaskSection`.
 
 ## Sources and further reading
 

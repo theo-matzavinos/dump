@@ -1,40 +1,35 @@
 ---
 title: "Dependency injection, from first principles to Angular"
-description: "Separate dependency usage from creation, then understand Angular tokens, providers, injection context, instance ownership, and parent/child collaboration."
+description: "Follow one task API from plain TypeScript into Angular to see how tokens, providers, and injector hierarchies decide which instance and which configuration a class receives."
 pubDate: "2026-03-17"
-updatedDate: "2026-09-30"
+updatedDate: "2026-10-15"
 tags:
   - angular
   - dependency-injection
   - typescript
 ---
 
-Two components ask for the same service. Sometimes they receive the same instance; sometimes they receive separate instances. A component overrides a configuration token, but a root-provided service still uses the original value.
+An archive page needs to load tasks from a different server address, so it overrides the `API_URL` value in its own `providers`. The page itself now sees `/archive-api`. But the `TaskApi` service the page asks Angular for still sends requests to `/api`. Meanwhile, two task panels on the same board each keep their own selected task, even though both inject the same service class.
 
-Those behaviors become predictable once you separate three questions:
+Both behaviors follow a small set of rules about who creates an object and where it gets its own dependencies. This article builds those rules from the ground up: it starts with a plain TypeScript class that needs a logger and an address, and it carries that same `TaskApi` into Angular until the archive page's override makes sense.
 
-- **Token:** what dependency is being requested?
-- **Provider:** how should its value be obtained?
-- **Injector:** where does that provider live, and which instance does it own?
-
-Dependency injection starts with an even simpler distinction: **using an object is not the same responsibility as creating it**.
-
-We will start with plain TypeScript, then follow one dependency through Angular's providers and injector hierarchies. The Angular examples use standalone components and signal-based queries; their APIs and behavior were checked against Angular v22.2.1.
+You'll need TypeScript classes and basic Angular components to follow along; [Splitting a task page into Angular components](/dump/blog/angular-component-composition/) covers the components and the `Task` shape used here. The Angular examples use Angular 22.2.1 with standalone components and signals.
 
 ## Contents
 
-1. [Usage versus construction](#usage-versus-construction)
-2. [Manual injection versus a container](#manual-injection-versus-a-container)
-3. [Tokens and provider recipes](#tokens-and-provider-recipes)
-4. [Where inject can run](#where-inject-can-run)
-5. [Hierarchies and instance ownership](#hierarchies-and-instance-ownership)
-6. [Local overrides and visibility](#local-overrides-and-visibility)
-7. [Queries and parent/child collaboration](#queries-and-parentchild-collaboration)
-8. [A debugging checklist](#a-debugging-checklist)
+1. [Using a dependency versus creating it](#using-a-dependency-versus-creating-it)
+2. [Wiring by hand and with an injector](#wiring-by-hand-and-with-an-injector)
+3. [Where inject() can run](#where-inject-can-run)
+4. [Tokens and providers](#tokens-and-providers)
+5. [Injector hierarchies and shared instances](#injector-hierarchies-and-shared-instances)
+6. [Overriding a service's configuration](#overriding-a-services-configuration)
+7. [Queries use the same element injectors](#queries-use-the-same-element-injectors)
+8. [Going further: viewProviders and resolution modifiers](#going-further-viewproviders-and-resolution-modifiers)
+9. [Debugging checklist](#debugging-checklist)
 
-## Usage versus construction
+## Using a dependency versus creating it
 
-Consider a class that creates its own dependency:
+Here's a task API that writes a log line each time it loads tasks. A real version would also call `fetch`, but logging is enough to follow the dependencies:
 
 ```ts
 class Logger {
@@ -43,84 +38,110 @@ class Logger {
   }
 }
 
-class UserApi {
+class TaskApi {
   private readonly logger = new Logger();
+  private readonly apiUrl = "/api";
 
-  loadUser(id: string): void {
-    this.logger.log(`Loading user ${id}`);
+  loadTasks(): void {
+    this.logger.log(`Loading tasks from ${this.apiUrl}/tasks`);
   }
 }
 ```
 
-`UserApi` uses logging, but it also decides which logger to construct and when to construct it. Replacing the logger now means changing the consumer.
+`TaskApi` uses a logger and an address, but it also picks them: it creates its own `Logger` and hard-codes `/api`. So if a test wants to capture the log lines, or the archive page wants another address, someone has to edit `TaskApi`.
 
-Moving the logger to a global variable avoids repeated construction. Hiding it behind a lazy singleton delays construction. Neither removes the consumer's knowledge of **where to obtain it**.
+A common first fix is a shared logger that everyone reuses:
 
-Constructor injection moves that decision outside the class:
+```ts
+let sharedLogger: Logger | undefined;
+
+function getLogger(): Logger {
+  if (sharedLogger === undefined) {
+    sharedLogger = new Logger();
+  }
+  return sharedLogger;
+}
+```
+
+This is a **singleton**: a single shared instance, created the first time someone asks for it. It stops every class from creating its own logger, but `TaskApi` would still call `getLogger()` itself, so it still decides where its logger comes from.
+
+The other option is to have `TaskApi` receive what it needs when it's created:
 
 ```ts
 interface LogSink {
   log(message: string): void;
 }
 
-class UserApi {
-  constructor(private readonly logger: LogSink) {}
+class TaskApi {
+  constructor(
+    private readonly logger: LogSink,
+    private readonly apiUrl: string,
+  ) {}
 
-  loadUser(id: string): void {
-    this.logger.log(`Loading user ${id}`);
+  loadTasks(): void {
+    this.logger.log(`Loading tasks from ${this.apiUrl}/tasks`);
   }
 }
 
-const api = new UserApi(console);
-api.loadUser("42");
+const api = new TaskApi(console, "/api");
+api.loadTasks(); // logs "Loading tasks from /api/tasks"
 ```
 
-The class receives a usable dependency when it is constructed. There is no later setter that callers must remember before `loadUser()` is safe to call.
+What to notice:
 
-A test can supply a different implementation without changing `UserApi`:
+- `private readonly logger: LogSink` inside the constructor's parameter list is TypeScript shorthand. It declares a `logger` field and assigns the argument to it, so you don't have to write `this.logger = logger` yourself.
+- Passing `console` works because TypeScript checks the shape of a value, not its class name. That's called **structural typing**. `console` has a `log(message)` method, so it fits `LogSink`.
+- `TaskApi` can't exist without its logger and address. No caller has to remember to set them before calling `loadTasks()`.
+
+A test can now pass a fake logger that records messages, without touching `TaskApi`:
 
 ```ts
 const messages: string[] = [];
-const api = new UserApi({
-  log(message) {
-    messages.push(message);
+const api = new TaskApi(
+  {
+    log(message) {
+      messages.push(message);
+    },
   },
-});
+  "/test-api",
+);
 
-api.loadUser("42");
-console.log(messages); // ["Loading user 42"]
+api.loadTasks();
+console.log(messages); // ["Loading tasks from /test-api/tasks"]
 ```
 
-**This is already dependency injection.** It does not require decorators, a framework, or a container. The benefit is separation of responsibilities, not the number of objects involved.
+That's dependency injection. There are no decorators and no framework here: `TaskApi` stopped choosing its own logger and address, and whoever creates it now makes that choice. Everything Angular adds automates this one idea.
 
-## Manual injection versus a container
+## Wiring by hand and with an injector
 
-Manual wiring is straightforward for a small graph:
+In a small program you create the objects yourself and pass them in:
 
 ```ts
 const logger = new Logger();
-const api = new UserApi(logger);
+const taskApi = new TaskApi(logger, "/api");
+const archiveApi = new TaskApi(logger, "/archive-api");
 ```
 
-For a larger graph, some object must still decide how dependencies are created, configured, and shared. A **DI container** automates that wiring using registered rules.
+Both APIs share one logger, and each has its own address. You decided all of that in three lines.
 
-Angular calls its containers **injectors**. An injector can look up a token, use its provider to produce a value, and reuse that value for later requests. If construction needs other dependencies, those are resolved in turn.
+A real app has hundreds of these objects, and many depend on each other. Some code still has to decide how each one is created, which ones are shared, and which ones get special configuration. A **dependency injection container** does that wiring for you, following rules you register up front.
+
+Angular's containers are called **injectors**. When code asks an injector for something, the injector finds the matching rule, creates the value (first creating anything that value itself depends on), and keeps it so later requests get the same one.
 
 ```mermaid
 flowchart LR
-    C[Consumer requests a token] --> I[Injector finds a provider]
-    I --> P[Use the provider recipe]
-    P --> D[Resolve construction dependencies if needed]
-    D --> V[Create or return the value]
+    C[Code asks for a dependency] --> I[Injector finds the matching rule]
+    I --> D[Creates the dependency's own dependencies first]
+    D --> V[Creates the value, or returns the one it already made]
 ```
 
-The injector does not remove the need to choose lifetimes or implementations. It gives those choices an explicit home instead of scattering them through consumers.
+You still choose what's shared and what's configured differently. The injector gives those choices one place to live instead of spreading them across every class.
 
-## Tokens and provider recipes
+## Where inject() can run
 
-A **token** is a runtime lookup key. A **provider** describes how to obtain the value for that key.
+In Angular, a class asks for a dependency by calling `inject()`. Here's the task API as an Angular service. It still uses `/api` directly; the next section turns the address into something injectable too.
 
-A class can serve both as a token and as its implementation:
+Save `logger.ts`:
 
 ```ts
 import { Injectable } from "@angular/core";
@@ -133,154 +154,91 @@ export class Logger {
 }
 ```
 
-`@Injectable()` supplies Angular with the metadata needed to construct the service. `providedIn: "root"` registers it in the application's root environment scope. Without `providedIn`, register it explicitly in an appropriate `providers` array.
-
-This is registration, not immediate construction: a normal class provider creates its instance when first resolved. Root registration also supports tree-shaking of unused services.
-
-### Values and interfaces need runtime tokens
-
-TypeScript interfaces disappear at runtime. Angular cannot look up an interface name that no longer exists.
-
-Use `InjectionToken<T>` for configuration, functions, or interface-shaped capabilities:
+Save `task-api.ts`:
 
 ```ts
-import { InjectionToken } from "@angular/core";
+import { Injectable, inject } from "@angular/core";
+import { Logger } from "./logger";
 
-export const API_URL = new InjectionToken<string>("api.url");
+@Injectable({ providedIn: "root" })
+export class TaskApi {
+  private readonly logger = inject(Logger);
+  readonly apiUrl = "/api";
+
+  loadTasks(): void {
+    this.logger.log(`Loading tasks from ${this.apiUrl}/tasks`);
+  }
+}
 ```
 
-The description helps debugging; it is not the identity. Two calls to `new InjectionToken<string>("api.url")` create **different tokens**, even with the same description. Export and reuse the same token object.
+`@Injectable(...)` is a **decorator**: a function written with `@` above a class that attaches extra information to it. Angular's compiler reads that information to learn how to create `TaskApi`. `providedIn: "root"` registers the class with the application's root injector, the one every part of the app can reach. The next section looks at registration more closely.
 
-### Provider recipes
-
-The following are provider-array fragments. Place them in application configuration, route configuration, or component metadata according to the desired scope; they are not standalone statements.
-
-| Recipe                                                          | Meaning                                                    |
-| --------------------------------------------------------------- | ---------------------------------------------------------- |
-| `Logger`                                                        | Shorthand for `{ provide: Logger, useClass: Logger }`      |
-| `{ provide: Logger, useClass: ConsoleLogger }`                  | Construct `ConsoleLogger` for requests for `Logger`        |
-| `{ provide: API_URL, useValue: "/api" }`                        | Return exactly the supplied value                          |
-| `{ provide: API_URL, useFactory: () => inject(Config).apiUrl }` | Call a factory to obtain the value                         |
-| `{ provide: AuditLogger, useExisting: Logger }`                 | Resolve `Logger` and return that value under another token |
-
-Here, `ConsoleLogger`, `Config`, and `AuditLogger` stand for application-defined classes. The factory can call `inject()` because Angular executes it in an injection context.
-
-A normal factory provider is not a getter that reruns on every injection. Angular caches its result in the injector that owns the provider. Likewise, `useValue` does not clone an object for each consumer.
-
-### Construction is not aliasing
-
-These registrations create separate instances, even though both use the same class:
-
-```ts
-const providers = [ConsoleLogger, { provide: Logger, useClass: ConsoleLogger }];
-```
-
-Resolving `ConsoleLogger` constructs one instance. Resolving `Logger` constructs another instance for that registration.
-
-To share the resolved instance, alias its token:
-
-```ts
-const providers = [ConsoleLogger, { provide: Logger, useExisting: ConsoleLogger }];
-```
-
-Now both tokens resolve to the same object. This distinction matters when the object holds state, subscriptions, or resource ownership.
-
-## Where inject can run
-
-`inject()` is not a global service locator you can call anywhere. It needs an active **injection context**: a synchronous execution context in which Angular knows the current injector.
-
-Common valid locations include:
-
-- field initializers and constructors of classes created by Angular DI;
-- provider and injection-token factories;
-- framework callbacks explicitly designed for DI, such as functional router guards;
-- synchronous code called from one of those contexts.
+A component asks for the service the same way:
 
 ```ts
 import { Component, inject } from "@angular/core";
-import { Logger } from "./logger";
+import { TaskApi } from "./task-api";
 
 @Component({
-  selector: "user-page",
-  template: `<button (click)="load()">Load user</button>`,
+  selector: "task-page",
+  template: `<button type="button" (click)="reload()">Reload tasks</button>`,
 })
-export class UserPage {
-  private readonly logger = inject(Logger);
+export class TaskPage {
+  private readonly api = inject(TaskApi);
 
-  load(): void {
-    this.logger.log("Loading user");
+  reload(): void {
+    this.api.loadTasks();
   }
 }
 ```
 
-The field initializer resolves the dependency during construction. The later event handler uses the stored reference.
+Clicking the button logs `Loading tasks from /api/tasks`.
 
-Moving `inject(Logger)` into `load()` would fail with **NG0203**. Lifecycle hooks such as `ngOnInit()` are not automatically injection contexts either. Resolve dependencies during initialization and use them later.
+Notice that `inject(TaskApi)` sits in a field initializer, and `reload()` only uses the stored field. That placement matters, because `inject()` takes no injector argument. So how does it know which injector to ask?
 
-For code that genuinely needs an explicit context, Angular provides `runInInjectionContext(injector, callback)`. The callback's context is synchronous: it does not survive an `await` or transfer to a later timer callback. Resolve the dependencies before the asynchronous boundary.
+Here's the mechanism. When Angular is about to create a component or service, it saves which injector is doing the creating in a hidden variable. Then it runs the class's constructor and field initializers, and when they finish it puts the previous value back. `inject()` reads that variable. The stretch of code that runs while the variable is set is called an **injection context**.
 
-An injection context also does not make `new UserPage()` equivalent to Angular creating a component. Framework construction and plain JavaScript construction are different operations.
-
-## Hierarchies and instance ownership
-
-Angular does not have one flat container. In a standalone application, the two main hierarchies are:
-
-- **Environment injectors:** application and broader feature scopes, including child injectors created by route provider configuration.
-- **Element injectors:** providers associated with components and directives in Angular's logical view tree.
-
-For a normal component/directive request, Angular searches the current element injector and eligible ancestors first. If no provider matches, it falls back to the environment hierarchy associated with the request's starting location.
-
-```mermaid
-flowchart BT
-    Child[Child requests a token] --> Local[Current and ancestor element injectors]
-    Local -->|No match| Route[Associated environment injector]
-    Route --> Root[Root environment injector]
-    Root --> Platform[Platform injector]
-    Platform --> Missing[Missing provider: error, or null for optional lookup]
-```
-
-**The nearest visible matching provider wins.** Visibility matters: this is Angular's logical view hierarchy, not an arbitrary walk through `element.parentElement`. NgModule-based applications also have module-injector configuration; the examples here use standalone setup.
-
-### One shared instance per owning scope, not per class name
-
-A root-provided service normally has one instance per application root injector. It is not a process-wide singleton, and a local provider can create another instance of the same class.
+A click handler runs later, after creation has finished and the variable is empty:
 
 ```ts
-import { Component, Injectable, inject, signal } from "@angular/core";
-
-@Injectable()
-export class SectionState {
-  readonly count = signal(0);
-}
-
-@Component({
-  selector: "section-counter",
-  providers: [SectionState],
-  template: ` <button (click)="increment()">Count: {{ state.count() }}</button> `,
-})
-export class SectionCounter {
-  readonly state = inject(SectionState);
-
-  increment(): void {
-    this.state.count.update((count) => count + 1);
-  }
+reload(): void {
+  const api = inject(TaskApi); // runs on click, after TaskPage was created
+  api.loadTasks();
 }
 ```
 
-Render two `<section-counter />` instances and each gets its own `SectionState`. Clicking one does not change the other. Eligible descendants of each counter can share that counter's local instance.
+Clicking now throws:
 
-Destroying a counter destroys its element-scoped service instance too. Angular invokes applicable destruction hooks; a service that owns resources still needs to release them, for example through `DestroyRef` or `ngOnDestroy()`.
+```text
+NG0203: The `TaskApi` token injection failed. `inject()` function must be called from an injection context such as a constructor, a factory function, a field initializer, or a function used with `runInInjectionContext`.
+```
 
-Do not assume a route-provided service is recreated on every navigation. Its lifetime follows its owning injector and router reuse behavior, not simply a URL change.
+The same goes for lifecycle methods such as `ngOnInit()`, timers, and any code after an `await`: they all run after creation. So `inject()` works in:
 
-## Local overrides and visibility
+- constructors and field initializers of classes that Angular creates;
+- provider factory functions, which you'll see in the next section;
+- framework callbacks that Angular runs in an injection context, such as functional router guards;
+- any function called synchronously from one of those places.
 
-The most revealing override example involves a service's **own dependencies**.
+The pattern is the one `TaskPage` uses: ask for dependencies while the class is created, store them in fields, and use the fields later. For the rare code that needs an injection context at another time, `runInInjectionContext(injector, callback)` sets the variable to the injector you pass and runs the callback. It's just as synchronous, so the context ends at the callback's first `await`.
 
-Suppose these declarations live in `user-api.ts`:
+## Tokens and providers
+
+When `TaskPage` calls `inject(TaskApi)`, the class `TaskApi` is the lookup key. Angular calls that key a **token**. The rule that says how to produce the value for a token is a **provider**.
+
+`providedIn: "root"` is one way to register a provider: it tells the root injector "when someone asks for `TaskApi`, create one with `new TaskApi()`". Registering doesn't create anything yet. The root injector creates `TaskApi` the first time something asks for it, then keeps that one instance.
+
+Registering this way also helps **tree-shaking**, the build step that drops code nothing uses. If no code ever injects a root-provided service, the build can leave it out of your bundle.
+
+### Values and interfaces need an InjectionToken
+
+The address `/api` is a string, and there's no class to use as its key. Interfaces don't work as keys either: TypeScript erases them when it compiles to JavaScript, so at runtime there's no `LogSink` left for Angular to look up.
+
+For these, you create a token object with `InjectionToken`. Here's the final `task-api.ts`, with the address moved into a token:
 
 ```ts
 import { Injectable, InjectionToken, inject } from "@angular/core";
+import { Logger } from "./logger";
 
 export const API_URL = new InjectionToken<string>("api.url", {
   providedIn: "root",
@@ -288,269 +246,359 @@ export const API_URL = new InjectionToken<string>("api.url", {
 });
 
 @Injectable({ providedIn: "root" })
-export class UserApi {
+export class TaskApi {
+  private readonly logger = inject(Logger);
   readonly apiUrl = inject(API_URL);
+
+  loadTasks(): void {
+    this.logger.log(`Loading tasks from ${this.apiUrl}/tasks`);
+  }
 }
 ```
 
-Now a component overrides the token:
+What to notice:
+
+- `<string>` tells TypeScript what `inject(API_URL)` returns.
+- `providedIn: "root"` with a `factory` gives the token a default provider in the root injector, so every app gets `/api` unless something overrides it.
+- The `"api.url"` text only appears in error messages. The token's identity is the object itself: two separate `new InjectionToken<string>("api.url")` calls create two different tokens. Export one and import it everywhere.
+
+### Provider recipes
+
+You can also write providers yourself, as objects in a `providers` array. That array can live in the configuration passed to `bootstrapApplication`, on a route, or in a component's `@Component` options. Where you put it decides which injector holds it, which the next section covers.
+
+These examples use a second logger:
+
+```ts
+import { Injectable } from "@angular/core";
+import { Logger } from "./logger";
+
+@Injectable()
+export class TimestampLogger extends Logger {
+  override log(message: string): void {
+    console.log(`${new Date().toISOString()} ${message}`);
+  }
+}
+```
+
+`@Injectable()` without `providedIn` makes the class creatable by Angular but doesn't register it anywhere. It only works once it appears in a `providers` array.
+
+| Provider                                            | What the injector does when asked for the token                 |
+| --------------------------------------------------- | --------------------------------------------------------------- |
+| `Logger`                                            | Short for `{ provide: Logger, useClass: Logger }`               |
+| `{ provide: Logger, useClass: TimestampLogger }`    | Creates a `TimestampLogger` and hands it out as the `Logger`     |
+| `{ provide: API_URL, useValue: "/archive-api" }`    | Returns that exact value                                        |
+| `{ provide: API_URL, useFactory: apiUrlFactory }`   | Calls the function once and returns its result                  |
+| `{ provide: Logger, useExisting: TimestampLogger }` | Looks up `TimestampLogger` and returns that same object         |
+
+A factory is a plain function that picks the value. It runs in an injection context, so it could also call `inject()` for anything it needs; this one only checks whether the app runs in development mode:
+
+```ts
+import { isDevMode } from "@angular/core";
+
+function apiUrlFactory(): string {
+  if (isDevMode()) {
+    return "http://localhost:3000/api";
+  }
+  return "/api";
+}
+```
+
+The factory runs once. The injector stores the result and hands that same value to everyone who asks it afterward. `useValue` works the same way: every consumer gets the very same object, not a copy.
+
+### useClass creates, useExisting points
+
+These two arrays look almost identical:
+
+```ts
+const separate = [TimestampLogger, { provide: Logger, useClass: TimestampLogger }];
+const shared = [TimestampLogger, { provide: Logger, useExisting: TimestampLogger }];
+```
+
+With `separate`, asking for `TimestampLogger` and asking for `Logger` gives you two different `TimestampLogger` objects, because each registration creates its own. With `shared`, the `Logger` registration points at the `TimestampLogger` registration, so both tokens return the same object. That difference matters as soon as the object holds state, such as a list of buffered log lines.
+
+## Injector hierarchies and shared instances
+
+Angular doesn't have one injector. It has two connected trees of them:
+
+- **Environment injectors** hold app-wide providers. The root injector is one. Routes with their own `providers` get child environment injectors under it.
+- **Element injectors** belong to elements in templates. A component or directive that has a `providers` array gives its element its own injector with those providers. The element injector also holds the component and directive instances on that element.
+
+When a component calls `inject()`, Angular first checks its own element injector. Then it moves up through the element injectors of the elements it sits inside, continuing from each template into the parent component that uses it. If none of them has a provider for the token, it moves on to the environment injectors: the route's, then the root, then the platform injector that Angular creates once per page. If nothing matches, you get error NG0201, "No provider found".
+
+```mermaid
+flowchart BT
+    Child[Component calls inject] --> Local[Its own element injector, then parent components' element injectors]
+    Local -->|No match| Route[Route environment injector, if any]
+    Route --> Root[Root injector]
+    Root --> Platform[Platform injector]
+    Platform --> Missing[NG0201: No provider found]
+```
+
+The first provider found wins. That's how a component's `providers` can override something registered in the root.
+
+### One instance per injector
+
+A root-provided service like `TaskApi` has one instance per application, because the root injector creates it once. That's the same idea as the `getLogger()` singleton earlier, except the injector manages it.
+
+A component that lists a service in its own `providers` gets an instance for each copy of that component. Here's a selection state that each task panel keeps for itself:
+
+```ts
+import { Injectable, signal } from "@angular/core";
+
+@Injectable()
+export class TaskSelection {
+  readonly selectedId = signal<number | undefined>(undefined);
+}
+```
+
+```ts
+import { Component, inject, input } from "@angular/core";
+import { TaskSelection } from "./task-selection";
+
+@Component({
+  selector: "task-panel",
+  providers: [TaskSelection],
+  template: `
+    <h2>{{ title() }}</h2>
+    <button type="button" (click)="selection.selectedId.set(1)">Select task 1</button>
+    <p>Selected: {{ selection.selectedId() ?? "none" }}</p>
+  `,
+})
+export class TaskPanel {
+  readonly title = input.required<string>();
+  readonly selection = inject(TaskSelection);
+}
+```
+
+Render `<task-panel title="Today" />` and `<task-panel title="Later" />` side by side, and each panel gets its own `TaskSelection`. Clicking Select in Today leaves Later at `none`. Any component inside a panel that injects `TaskSelection` finds that panel's instance first, so it shares state with its own panel only.
+
+When Angular destroys a panel, it destroys that panel's `TaskSelection` too. A service that holds resources such as timers or subscriptions should release them in a `DestroyRef.onDestroy` callback.
+
+That answers the second opening surprise: two components injecting the same class share an instance when the same injector provides it, and get separate ones when each component's own injector does.
+
+## Overriding a service's configuration
+
+Now back to the archive page. It overrides `API_URL` and asks for both the token and the service:
 
 ```ts
 import { Component, inject } from "@angular/core";
-import { API_URL, UserApi } from "./user-api";
+import { API_URL, TaskApi } from "./task-api";
 
 @Component({
-  selector: "user-page",
-  providers: [{ provide: API_URL, useValue: "/feature-api" }],
+  selector: "archive-page",
+  providers: [{ provide: API_URL, useValue: "/archive-api" }],
   template: `
     <p>Direct token: {{ directUrl }}</p>
-    <p>Service configuration: {{ api.apiUrl }}</p>
+    <p>TaskApi uses: {{ api.apiUrl }}</p>
   `,
 })
-export class UserPage {
+export class ArchivePage {
   readonly directUrl = inject(API_URL);
-  readonly api = inject(UserApi);
+  readonly api = inject(TaskApi);
 }
 ```
 
-The output is:
+The page renders:
 
 ```text
-Direct token: /feature-api
-Service configuration: /api
+Direct token: /archive-api
+TaskApi uses: /api
 ```
 
-The direct request sees the component provider. But `UserApi` belongs to the root injector, so its construction resolves `API_URL` from that root context. This remains true even if this component is the first consumer to request `UserApi`.
+Why? Follow who creates what:
 
-**A consumer's local overrides do not reconfigure a dependency owned by an ancestor injector.**
+1. `inject(API_URL)` in `ArchivePage` starts at the page's element injector, which has the override. So `directUrl` is `/archive-api`.
+2. `inject(TaskApi)` also starts at the page's element injector. It has no `TaskApi` provider, so the search continues up to the root injector, which has one.
+3. The root injector creates `TaskApi`. While it does, the root injector is the current injector, so the `inject(API_URL)` inside `TaskApi` asks the root and gets `/api`.
 
-To create a locally configured `UserApi`, use this array for the component's `providers`:
+It doesn't matter that the archive page asked first; the result is the same even when it's the very first code to request `TaskApi`. A component's `providers` only affect what that component's own injector, and the injectors below it, create.
+
+To get a `TaskApi` that uses the archive address, let the page's injector create one:
 
 ```ts
-const providers = [UserApi, { provide: API_URL, useValue: "/feature-api" }];
+providers: [TaskApi, { provide: API_URL, useValue: "/archive-api" }],
 ```
 
-Now the component owns both registrations, and both displayed URLs are `/feature-api`. The root `UserApi` registration still exists for other consumers.
+Now the page's injector has both providers. It creates its own `TaskApi`, and that `TaskApi`'s `inject(API_URL)` finds the override in the same injector. Both lines show `/archive-api`. Every other page still gets the root `TaskApi` with `/api`.
 
-### providers versus viewProviders
+## Queries use the same element injectors
 
-Component `providers` can be visible to both view descendants and projected content. `viewProviders` restricts those providers to the component's own view; content passed through `<ng-content>` cannot see them.
+`inject()` looks upward from a component. A **query**, such as `viewChildren`, looks the other way: it asks Angular to find things in the component's template and hand them to the component. Queries run on the same element injectors.
 
-This is useful when a component needs private internal state without overriding dependencies used by its caller's projected content.
+Here's how a query matches. For each element in the template it searches, Angular asks that element's injector whether it holds the token you passed: a component or directive class on the element, or a provider in the element's `providers`. This is the same lookup `inject()` performs at each step, but a query checks only that one element and doesn't move up to parents. When an element matches, Angular reads the token's value from that element's injector.
 
-Projection changes where content is displayed, not simply where all its dependencies are resolved. That is why “nearest DOM ancestor wins” is an insufficient model.
+### Querying by a provider token
 
-### Resolution modifiers
-
-These options modify an individual `inject()` request:
-
-| Option               | Effect                                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `{ optional: true }` | Return `null` if lookup fails instead of throwing                                                           |
-| `{ self: true }`     | Restrict lookup to the current injector                                                                     |
-| `{ skipSelf: true }` | Skip the current injector and start with its parent                                                         |
-| `{ host: true }`     | Limit element lookup to the host boundary of the containing view; do not fall back to environment providers |
-
-For example, `inject(SectionState, { optional: true, skipSelf: true })` asks for an ancestor's state rather than a provider on the current element.
-
-The host boundary is not merely “the nearest parent HTML element.” It depends on Angular's view structure, and `providers` versus `viewProviders` affects what is visible there. Use `host` when that boundary is part of the component's intended contract, not as a general scoping fix.
-
-## Queries and parent/child collaboration
-
-Components and directives themselves are available for injection. A child can inject an eligible ancestor component instance without the parent manually registering itself as a service.
-
-The opposite relationship uses **queries**:
-
-- `inject()` resolves a dependency from the current context and eligible ancestors.
-- `viewChild` and `viewChildren` search a component's own template.
-- `contentChild` and `contentChildren` search content supplied by its caller.
-
-Queries return signals. A single-result query can return `undefined` when no match exists; a multiple-result query returns an array. Required single-result queries fail if the required match is absent.
-
-| Query                       | Descendant traversal                                                              |
-| --------------------------- | --------------------------------------------------------------------------------- |
-| `viewChild`, `viewChildren` | Traverse the component's own view                                                 |
-| `contentChild`              | Traverses descendants by default                                                  |
-| `contentChildren`           | Direct children by default; use `{ descendants: true }` to include deeper matches |
-
-None of these queries pierces another component's private template. Traversing descendants is not permission to cross that boundary.
-
-### Locating a node and reading a value are separate choices
-
-A query locator can be a component, directive, provider token, or template-reference name. It is not a CSS selector.
+Each task panel provides its own `TaskSelection`, so a board can find every panel's selection by that token and reset them all:
 
 ```ts
-import { Component, ElementRef, viewChild } from "@angular/core";
+import { Component, viewChildren } from "@angular/core";
+import { TaskPanel } from "./task-panel";
+import { TaskSelection } from "./task-selection";
 
 @Component({
-  selector: "search-toolbar",
+  selector: "task-board",
+  imports: [TaskPanel],
   template: `
-    <input #searchBox aria-label="Search" />
-    <button (click)="focusSearch()">Focus search</button>
+    <task-panel title="Today" />
+    <task-panel title="Later" />
+    <button type="button" (click)="clearSelections()">Clear selections</button>
   `,
 })
-export class SearchToolbar {
-  private readonly input = viewChild.required("searchBox", {
-    read: ElementRef<HTMLInputElement>,
-  });
+export class TaskBoard {
+  private readonly selections = viewChildren(TaskSelection);
 
-  focusSearch(): void {
-    this.input().nativeElement.focus();
+  clearSelections(): void {
+    for (const selection of this.selections()) {
+      selection.selectedId.set(undefined);
+    }
   }
 }
 ```
 
-`#searchBox` locates the node; `read: ElementRef` specifies the value to retrieve. A token locator similarly finds a node providing that token and, by default, reads its value. Queries and DI share tokens and node-associated values, but queries are not unrestricted “injection in reverse.”
+What to notice:
 
-### Break a circular import with a capability token
+- `viewChildren` returns a signal. Calling `this.selections()` gives an array with one `TaskSelection` per panel, in template order.
+- They're the exact objects each panel received from its own `inject(TaskSelection)`. The query didn't create anything; it read what the panels' element injectors already hold.
+- `TaskBoard` never mentions how panels store their selection internally. It only needs the token.
 
-A parent may query children while each child injects the parent:
-
-```text
-parent-panel.ts → imports ChildItem to query it
-child-item.ts   → imports ParentPanel to inject it
-```
-
-That is a **module import cycle**. It is different from a **DI construction cycle**, where creating service A requires B and creating B requires A. Removing a module import cycle does not automatically repair a cyclic construction graph.
-
-If the child only needs a parent capability, give that capability a token. The following three files form one example.
+The `read` option separates "which elements match" from "which value to read from them":
 
 ```ts
-// parent-api.ts
-import { InjectionToken } from "@angular/core";
+readonly selections = viewChildren(TaskPanel, { read: TaskSelection });
+```
 
-export interface ParentApi {
-  select(id: string): void;
+This matches the elements that have a `TaskPanel` component, then asks each of those element injectors for `TaskSelection`. The result is the same two objects. `read` is also how you get `ElementRef`, the wrapper around the underlying DOM element, from a matched element.
+
+Queries stay inside one template. `viewChildren` in `TaskBoard` finds the `task-panel` elements in the board's template, but not the buttons inside each panel's own template.
+
+### Providing a component under a token
+
+A component can also put itself into its element injector under a token, so queries can find it without knowing its class. This example uses **projected content**: markup a caller writes between a component's tags, which the component displays wherever its template has `<ng-content />`:
+
+```html
+<!-- the caller's template -->
+<task-list>
+  <task-item [task]="first" />
+  <task-item [task]="second" />
+</task-list>
+
+<!-- task-list's own template -->
+<p>{{ items().length }} tasks</p>
+<ng-content />
+```
+
+The two `task-item` elements belong to the caller's template, and `task-list` shows them where `<ng-content />` sits. To query projected content, a component uses `contentChildren` instead of `viewChildren`.
+
+Here's a token for anything that represents a listed task:
+
+```ts
+import { InjectionToken } from "@angular/core";
+import type { Task } from "./task";
+
+export interface ListedTask {
+  task(): Task;
 }
 
-export const PARENT_API = new InjectionToken<ParentApi>("parent.api");
+export const LISTED_TASK = new InjectionToken<ListedTask>("listed.task");
 ```
 
+The task item registers itself under that token with `useExisting`:
+
 ```ts
-// child-item.ts
-import { Component, inject, input } from "@angular/core";
-import { PARENT_API } from "./parent-api";
+import { Component, forwardRef, inject, input } from "@angular/core";
+import { LISTED_TASK, type ListedTask } from "./listed-task";
+import type { Task } from "./task";
+import { TaskSelection } from "./task-selection";
 
 @Component({
-  selector: "child-item",
-  template: `<button (click)="select()">Select {{ id() }}</button>`,
+  selector: "task-item",
+  providers: [{ provide: LISTED_TASK, useExisting: forwardRef(() => TaskItem) }],
+  template: `<button type="button" (click)="select()">{{ task().title }}</button>`,
 })
-export class ChildItem {
-  readonly id = input.required<string>();
-  private readonly parent = inject(PARENT_API);
+export class TaskItem implements ListedTask {
+  readonly task = input.required<Task>();
+  private readonly selection = inject(TaskSelection);
 
   select(): void {
-    this.parent.select(this.id());
+    this.selection.selectedId.set(this.task().id);
   }
 }
 ```
 
+And the list counts whatever registers under the token:
+
 ```ts
-// parent-panel.ts
-import { Component, contentChildren, forwardRef, signal } from "@angular/core";
-import { ChildItem } from "./child-item";
-import { PARENT_API, type ParentApi } from "./parent-api";
+import { Component, contentChildren } from "@angular/core";
+import { LISTED_TASK } from "./listed-task";
+import { TaskSelection } from "./task-selection";
 
 @Component({
-  selector: "parent-panel",
-  providers: [{ provide: PARENT_API, useExisting: forwardRef(() => ParentPanel) }],
+  selector: "task-list",
+  providers: [TaskSelection],
   template: `
-    <p>Items: {{ children().length }}</p>
-    <p>Selected: {{ selectedId() }}</p>
+    <p>{{ items().length }} tasks</p>
     <ng-content />
   `,
 })
-export class ParentPanel implements ParentApi {
-  readonly children = contentChildren(ChildItem);
-  readonly selectedId = signal<string | null>(null);
-
-  select(id: string): void {
-    this.selectedId.set(id);
-  }
+export class TaskList {
+  readonly items = contentChildren(LISTED_TASK);
 }
 ```
 
-`useExisting` returns the actual parent component instance, not a second constructed parent. `forwardRef` defers resolving that class reference in the decorator configuration.
+With the two items from the caller's template, the list shows `2 tasks`. What to notice:
 
-The child imports the contract, not the parent. The parent can still query the concrete child class, so the import cycle is gone.
+- `useExisting` points the token at the `TaskItem` instance already on that element, so the query gets the component itself, not a second copy.
+- `forwardRef(() => TaskItem)` is needed because the decorator's options are evaluated before the `TaskItem` class exists. Writing `useExisting: TaskItem` there fails with TypeScript error TS2449, "Class 'TaskItem' used before its declaration". `forwardRef` wraps the reference in a function, and Angular calls that function later, once the class is defined.
+- `TaskList` doesn't import `TaskItem`. Any component that provides `LISTED_TASK` would be counted.
+- The item injects `TaskSelection` and finds the list's instance. Both directions run through element injectors: the item looks up to the list with `inject()`, and the list looks down to the items with a query.
+- `contentChildren` finds only direct children by default. Pass `{ descendants: true }` to also match elements nested deeper inside the projected content.
 
-Here is the caller that supplies the content:
+## Going further: viewProviders and resolution modifiers
 
-```ts
-import { Component } from "@angular/core";
-import { ChildItem } from "./child-item";
-import { ParentPanel } from "./parent-panel";
+You can skip this section on a first read. It covers two tools for narrowing where a lookup can go.
 
-@Component({
-  selector: "selection-page",
-  imports: [ParentPanel, ChildItem],
-  template: `
-    <parent-panel>
-      <child-item id="first" />
-      <child-item id="second" />
-    </parent-panel>
-  `,
-})
-export class SelectionPage {}
-```
+### viewProviders
 
-The panel reports two items. Selecting either item updates the parent's selected ID. The caller imports both components because both selectors appear in **its** template; querying a class does not require adding it to the parent's template imports.
+A component's `providers` are visible to its own template and to projected content. That's why the projected task items above can inject the list's `TaskSelection`. `viewProviders` registers providers that only the component's own template can see.
 
-### Alternatively, alias the child role
+If `TaskList` used `viewProviders: [TaskSelection]`, each projected `task-item` would fail with NG0201, because the items belong to the caller's template. Queries don't match `viewProviders` either. Use them when a component needs private state that shouldn't leak into content its caller supplies.
 
-If the parent should know only a child capability, put a `CHILD_API` token and its interface in a shared contract file instead:
+### Resolution modifiers
 
-```ts
-import { InjectionToken } from "@angular/core";
+`inject()` accepts options that change a single lookup:
 
-export interface ChildApi {
-  focus(): void;
-}
+| Option               | Effect                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `{ optional: true }` | Returns `null` instead of throwing when nothing provides the token                                          |
+| `{ self: true }`     | Only checks the current element injector                                                                     |
+| `{ skipSelf: true }` | Skips the current element injector and starts at its parent                                                 |
+| `{ host: true }`     | Stops at the component whose template contains this element, and never falls back to environment injectors |
 
-export const CHILD_API = new InjectionToken<ChildApi>("child.api");
-```
+For example, a task item that should also work outside a list could write `inject(TaskSelection, { optional: true })` and handle `null`.
 
-This replaces a concrete child reference with a runtime contract. Use the following array for the child's component `providers`, importing `CHILD_API` from the contract file and `forwardRef` from `@angular/core`:
+## Debugging checklist
 
-```ts
-const providers = [{ provide: CHILD_API, useExisting: forwardRef(() => ChildItem) }];
-```
+Back to the two surprises from the start. The archive page's override didn't reach `TaskApi` because the root injector created `TaskApi` and answered its `inject(API_URL)` call (item 4). The two panels kept separate selections because each panel's own `providers` created a `TaskSelection` (item 5).
 
-The child must implement `ChildApi`; the parent can then query `contentChildren(CHILD_API)` without importing `ChildItem`. These are alternative-design fragments, not additions required by the preceding example.
+When injection does something unexpected, walk through these:
 
-Choose the direction that removes the unwanted dependency. Use tokens on both sides only when both sides genuinely need independent contracts, not merely to maximize abstraction.
+1. **Is it the same token object?** Interfaces don't exist at runtime, and two `InjectionToken`s with the same description are still different tokens.
+2. **Did `inject()` run during creation?** NG0203 means it ran outside an injection context, such as in a click handler or after an `await`.
+3. **Where is the provider registered?** Check `providedIn`, app configuration, routes, and component `providers`. `@Injectable()` alone registers nothing.
+4. **Which injector creates the object?** A service gets its own dependencies from the injector that creates it, not from the component that asked for it.
+5. **Is a second instance being created?** A component's own `providers` and each `useClass` registration create new instances; `useExisting` points at one that already exists.
+6. **Can the lookup reach the provider?** Projected content, `viewProviders`, and resolution modifiers all change which injectors a lookup visits.
+7. **Is a query searching the right template?** `viewChildren` searches the component's template, `contentChildren` searches projected content, and neither looks inside child components' templates.
 
-## A debugging checklist
-
-When injection behaves unexpectedly, inspect the request and its owner:
-
-1. **Is it the same runtime token?** Interfaces are erased, and identically described `InjectionToken` objects are still distinct.
-2. **Is there an injection context?** NG0203 points to where `inject()` ran, not necessarily to a missing provider.
-3. **Where is the provider registered?** Check root, route, component, and directive configuration. `@Injectable()` without registration is not enough.
-4. **Which injector owns the object being constructed?** A component override does not flow into a root-owned service's dependencies.
-5. **Was a second instance requested?** Local re-provisioning and `useClass` registrations can create separate instances; `useExisting` aliases a resolved value.
-6. **Is the provider visible?** Check projection, `viewProviders`, and resolution modifiers rather than just the rendered DOM.
-7. **What kind of cycle exists?** Module imports and recursive DI construction need different fixes.
-8. **Is the query allowed to find the target?** Check the template boundary, descendant options, and whether the target currently exists.
-
-For a test, instantiate the consumer through the intended injector scope and assert the observable behavior or instance identity. A test that manually constructs every object can bypass the provider configuration you meant to verify.
-
-## Takeaways
-
-- Dependency injection separates dependency usage from construction; a container is optional.
-- Tokens identify dependencies, providers obtain values, and injectors own registrations and cached instances.
-- `inject()` requires a synchronous injection context.
-- Root scope is application-wide sharing, not a guarantee that every request for a class returns one universal instance.
-- A service resolves its own dependencies in its owning injector's context.
-- Queries can read node-associated tokens without crossing component template boundaries.
-- Capability tokens are useful when they remove a concrete coupling problem.
+To test injection behavior, create the component or service through the injector setup you actually use, then check what it renders or which instance it received. Constructing every object by hand in a test skips the very provider configuration you meant to check.
 
 ## Sources and further reading
 
 - [Angular: dependency injection overview](https://angular.dev/guide/di)
-- [Angular: defining dependency providers and aliases](https://angular.dev/guide/di/defining-dependency-providers)
+- [Angular: defining dependency providers](https://angular.dev/guide/di/defining-dependency-providers)
 - [Angular: injection context](https://angular.dev/guide/di/dependency-injection-context)
 - [Angular: hierarchical injectors, visibility, and resolution modifiers](https://angular.dev/guide/di/hierarchical-dependency-injection)
 - [Angular: component queries](https://angular.dev/guide/components/queries)
 - [Angular: runInInjectionContext](https://angular.dev/api/core/runInInjectionContext)
-- [Angular v22.2.1: injector resolution and instance caching](https://github.com/angular/angular/blob/fb7711f87d293ba1a282f21d0e9c1ef651c1b343/packages/core/src/di/r3_injector.ts)
+- [Angular: forwardRef](https://angular.dev/api/core/forwardRef)

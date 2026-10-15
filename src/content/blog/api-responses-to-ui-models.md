@@ -1,7 +1,8 @@
 ---
 title: "One task, different models: from database rows to the interface"
-description: "Follow a task through storage, backend application data, JSON, frontend state, and a row/editor. Give validation, mapping, dates, and confirmed updates clear owners."
+description: "Follow one task from database rows through a JSON response, a checked frontend model, and the row and editor that display it, then send an edit back and check the server's reply."
 pubDate: "2026-10-06"
+updatedDate: "2026-10-15"
 tags:
   - typescript
   - angular
@@ -9,63 +10,34 @@ tags:
   - frontend
 ---
 
-A database stores an assignee's identifier. An API response includes that person's name. A task row displays “Assigned to Mina Patel,” while an editor offers “Keep assignment” or “Clear assignment.” These describe the same task, but they are not interchangeable data.
+The task row on screen reads "Assigned to Mina Patel". The database row behind it doesn't contain that name at all, just `assignee_id: 7`. The editor for the same task doesn't show the name either; it offers a choice to keep or clear the assignment. So which of these is the task?
 
-This article follows **one task** through five representations, then traces an edit back out. The task has an assignee, a completion state, a calendar due date, and a creation timestamp. The goal is to understand why each shape exists—not to prescribe a backend architecture or teach JSON in isolation.
+It's tempting to write one `Task` interface and use it everywhere, from the database to the template. This article follows one task from the database to the screen and back again, shows the shape it takes at each step, and shows what goes wrong when one step's shape leaks into the next.
 
-The runnable client uses Angular 22.2.1, TypeScript 6.0.3, and Zod 4.6.5. It builds on [component ownership](/dump/blog/angular-component-composition/), [accepted data and form drafts](/dump/blog/forms-and-validation/), [accessible correction](/dump/blog/accessibility-in-practice/), and the [Tailwind 4 setup and shared palette](/dump/blog/frontend-evolution-styling/#define-the-shared-palette-once). The storage and backend records below are **illustrations**, not executable backend code. The client uses an explicitly labelled, in-memory response simulation; nothing is sent to a server or persisted.
+You'll need the [component composition article](/dump/blog/angular-component-composition/) for `input`, `signal`, `computed` and `linkedSignal`, the [forms article](/dump/blog/forms-and-validation/) for the idea of an edit draft kept apart from accepted data and for a first look at Zod schemas, and basic `async` and `await`.
+
+The client code uses Angular 22.2.1, TypeScript 6.0.3 and Zod 4.6.5. The database and backend records are sketches for explanation, not code to run. The client talks to a fake server that lives in memory, so nothing goes over the network and nothing is saved.
 
 ## Contents
 
-1. [Start with four small mysteries](#start-with-four-small-mysteries)
-2. [Different models serve different owners](#different-models-serve-different-owners)
-3. [Trace one task through the boundaries](#trace-one-task-through-the-boundaries)
-4. [The wire carries representations, not application objects](#the-wire-carries-representations-not-application-objects)
-5. [TypeScript describes expectations; validation checks values](#typescript-describes-expectations-validation-checks-values)
-6. [Missing, null, and empty have contract meanings](#missing-null-and-empty-have-contract-meanings)
-7. [Dates need meaning before conversion](#dates-need-meaning-before-conversion)
-8. [Give mapping an owner, and follow edits back out](#give-mapping-an-owner-and-follow-edits-back-out)
-9. [Connect the model to Angular without imposing machinery](#connect-the-model-to-angular-without-imposing-machinery)
+1. [Follow one task from the database to the screen](#follow-one-task-from-the-database-to-the-screen)
+2. [What arrives: JSON text](#what-arrives-json-text)
+3. [Two kinds of dates](#two-kinds-of-dates)
+4. [Checking the response at runtime](#checking-the-response-at-runtime)
+5. [`null`, missing, and empty mean different things](#null-missing-and-empty-mean-different-things)
+6. [Mapping the response into the frontend `Task`](#mapping-the-response-into-the-frontend-task)
+7. [Shaping the task for the row](#shaping-the-task-for-the-row)
+8. [Sending an edit back](#sending-an-edit-back)
+9. [The Angular components](#the-angular-components)
 
-## Start with four small mysteries
+## Follow one task from the database to the screen
 
-Consider the operations, before choosing any library:
-
-- **Why should renaming a database column not necessarily change the API?** The backend can read the new column and still construct the response fields its clients already understand.
-- **Why does a property declared as `Date` arrive as a string?** Sending JSON turns values into text. Parsing that text does not reconstruct a JavaScript `Date` automatically.
-- **Why does the editor need different data from the row?** The row needs readable labels. The editor needs unfinished values and explicit choices about what to change.
-- **Why can a typed response contain an unexpected value?** A TypeScript declaration describes an expectation during development. It does not inspect bytes returned by another process.
-
-There are three separate jobs here: **check what arrived, choose the application's representation, and derive what the screen needs**. Giving them separate owners makes changes easier to trace.
-
-## Different models serve different owners
-
-A model is a representation chosen for some work. It can be an ordinary record; it does not have to be a class or a file of its own.
-
-A **domain model** represents application concepts and rules: a task, its assignee, and what completing it means. Here, “domain” means the subject the application works with. An application model can cover only the concepts needed by a particular use case. Neither term requires a prescribed collection of classes.
-
-A **data transfer object**, abbreviated **DTO**, is the data exchanged for an operation. A response that reads a task and a request that changes a task have different jobs, so they can have different fields.
-
-A **view model** is data and state selected for a particular interface. A row might need formatted text and an expanded-details flag. An editor might need editable text and an assignment-change choice. These are not necessarily useful elsewhere in the application.
-
-| Model                            | Represents                       | Shaped by                          |
-| -------------------------------- | -------------------------------- | ---------------------------------- |
-| Persistence model                | Stored data and relationships    | Columns, keys, and queries         |
-| Backend domain/application model | Application concepts and rules   | Business meaning and use cases     |
-| DTO                              | Data exchanged for one operation | The communication contract         |
-| Frontend application model       | Concepts the client works with   | Client behavior and accepted state |
-| UI view model                    | Data and state for one interface | Presentation and interaction       |
-
-The frontend need not reproduce the backend's entire domain. This client only needs to read one task and edit its title, completion, due date, and whether to clear its assignment. It does not need a user-management model or every task rule enforced by a real server.
-
-## Trace one task through the boundaries
-
-First, imagine these stored rows. A calendar date identifies a day; an instant identifies a particular moment. These are explanatory records, not database queries or mapper configuration:
+Start where the task is stored. A database keeps tasks in one table and users in another, so the task row holds only the assignee's ID:
 
 ```text
 Task row:
   task_id:       41
-  title_text:    "Review the task contract"
+  title_text:    "Review the CSS layout"
   completed:     false
   assignee_id:   7
   due_date:      2026-10-06                 (calendar date)
@@ -76,50 +48,48 @@ User row:
   display_name:  "Mina Patel"
 ```
 
-The task's `assignee_id` points to the user row's `user_id`. A **foreign key** is a stored reference from one record to another, normally enforced by the database. It represents the relationship without copying all the user's fields into every task row.
+Two things to notice. First, `assignee_id: 7` points at the user row whose `user_id` is 7. A stored pointer like that is called a **foreign key**: the task refers to the user instead of copying the user's name into every task. Second, the task has two different kinds of date. `due_date` is a day on the calendar: the task is due on October 6, wherever you are. `created_at` is an **instant**, one exact moment in time. The [dates section](#two-kinds-of-dates) shows why that difference matters.
 
-An **object-relational mapper**, or **ORM**, is software that maps relational database data to programming-language objects and back. It can help retrieve that relationship. Its resulting objects may still follow storage columns and relationships; an ORM does not automatically design the application's domain model.
-
-The backend could then work with this application-shaped record:
+Backend code reads those rows and builds something closer to how people talk about the task: "task 41, assigned to Mina Patel, due October 6".
 
 ```text
-Task application record:
+Task record in the backend:
   id:          41
-  title:       "Review the task contract"
+  title:       "Review the CSS layout"
   completion:  "open"
   assignee:    { id: 7, name: "Mina Patel" }
   dueDate:     CalendarDate(2026, 10, 6)
   createdAt:   Instant(2026-10-06T00:30:00Z)
 ```
 
-`CalendarDate(...)` and `Instant(...)` are explanatory notation for meanings, not selected backend APIs. The assignee is now a nested application concept rather than just a foreign key. A domain model could also express rules for completing or assigning tasks; showing a record here does not imply those rules are absent or that they must be methods.
+`CalendarDate(...)` and `Instant(...)` are notation for "a calendar day" and "a moment", not a particular library. The assignee is now a nested object with a name instead of a bare ID. A shape like this, built around the application's own ideas instead of the database's tables, is often called the **domain model**. "Domain" means the subject the application deals with, here tasks and the people assigned to them. It's usually plain data, and it's also where backend rules live, such as what has to be true before a task can be completed.
 
-The complete route is:
+Building one shape from another like this is called **mapping**. A mapper can pick fields, rename them, combine them and convert their types. It doesn't have to copy every property. That's also why the database's column names don't have to reach the frontend: if someone renames `title_text`, only the backend's mapper changes, and the frontend keeps receiving `title`.
+
+From the backend record, the task travels on:
 
 ```text
-Database / persistence model
-        ↕ ORM and application mapping
-Backend application/domain model
-        ↕ request/response mapping
-DTOs — serialized across the wire
-        ↕ validation and frontend mapping
-Frontend application model
-        ↓ screen-specific projection
-UI view models: row and editor
+Database rows
+        ↕  backend code maps rows to records
+Backend domain model
+        ↕  backend code builds the response
+JSON response (a DTO)
+        ↓  frontend checks it, then maps it
+Frontend Task
+        ↓  each component derives what it shows
+Row view model and editor draft
 ```
 
-**Mapping** constructs one representation from another. It can select fields, rename them, combine or split them, and convert types. It need not be a copy of every property.
+An edit travels back up the same route: the editor's draft becomes an update request, the server applies it, and its reply is another JSON response that the frontend checks the same way. The rest of the article builds the frontend half of that route, and each of the names in the diagram gets explained at the step where it appears.
 
-The rest of the article makes the last three steps concrete: actual response JSON, a checked frontend task, and a row/editor consuming that task.
+## What arrives: JSON text
 
-## The wire carries representations, not application objects
-
-Here is the actual response body chosen for this example, **before any TypeScript transport type**:
+Here's the response body the frontend receives when it asks for task 41:
 
 ```json
 {
   "task_id": 41,
-  "title": "Review the task contract",
+  "title": "Review the CSS layout",
   "status": "open",
   "assignee": {
     "user_id": 7,
@@ -130,13 +100,19 @@ Here is the actual response body chosen for this example, **before any TypeScrip
 }
 ```
 
-The operation promises a task ID, title, completion status, due date, and creation instant. Assignee information may be omitted; when present it is either `null` or an object. We will preserve that distinction rather than guess.
+This is text, a string of characters in the body of an HTTP response. It's shaped for this one request: snake_case field names, a status word instead of a boolean, and the assignee's name included so the frontend doesn't need a second request to look it up. Data shaped for one exchange between two programs is called a **data transfer object**, or **DTO**. The update request later in the article is a different DTO with different fields, because it does a different job.
 
-**Serialization** converts values into a representation suitable for storage or communication—here, JSON text. **Parsing** reads that text into values again. “Across the wire” means exchanged between processes, commonly in an HTTP response body.
+The backend and the frontend agree on what each field means. In this example:
 
-JSON represents objects, arrays, strings, numbers, booleans, and `null`. It has no date value, class identity, or methods. A backend serializer must choose how to represent an instant; this contract chooses a string with an explicit time reference.
+- `task_id`, `title`, `status`, `due_on` and `created_at` are always present.
+- `status` is either `"open"` or `"completed"`.
+- `due_on` is a calendar date, or `null` when the task has no due date.
+- `created_at` is an instant with an explicit time reference, like the `Z` here.
+- `assignee` can be an object, `null`, or missing entirely. Those three mean different things, covered in [their own section](#null-missing-and-empty-mean-different-things).
 
-In JavaScript, `JSON.stringify` uses a valid `Date` object's `toJSON()` method, which produces an ISO-formatted string. `JSON.parse` does not know that this particular string should become a `Date`. This independent runnable check, saved as `wire-check.ts`, shows both that and object-property omission. Its `unknown` type means the parsed value has no trusted shape yet; TypeScript requires checking before reading its properties:
+Turning values into text so they can be sent or stored is called **serialization**, and reading the text back into values is called **parsing**. JSON has objects, arrays, strings, numbers, booleans and `null`, and nothing else. It has no date type, so a date has to travel as a string, and nothing in the JSON says which strings are dates.
+
+You can see that in JavaScript. Save this check as `wire-check.ts` and run it with `node wire-check.ts`. Node.js 22.18 and later can run TypeScript files directly by removing the types first.
 
 ```ts
 const encoded = JSON.stringify({
@@ -149,93 +125,152 @@ const decoded: unknown = JSON.parse(encoded);
 console.log(encoded);
 // {"created_at":"2026-10-06T00:30:00.000Z"}
 console.log(decoded);
-// An ordinary object whose created_at value is a string, not a Date.
+// { created_at: '2026-10-06T00:30:00.000Z' }
 console.log(JSON.stringify({ assignee_id: null }));
 // {"assignee_id":null}
 ```
 
-`undefined` is not a JSON value. For an **object property**, `JSON.stringify` omits it. In an array, an `undefined` entry becomes `null` instead. Neither behavior tells us what a receiver should do with omission; that is a contract decision.
+Notice three things in the output:
 
-Reading and changing also need different representations. A read response includes an assignee's name and the creation instant. An update request need not send either. It should send deliberate changes, not a serialized copy of everything visible on the page.
+- `JSON.stringify` turned the `Date` into a string. It does that by calling the date's `toJSON()` method, which writes the instant in ISO format.
+- `JSON.parse` gave back a plain object whose `created_at` is a string. Parsing never turns strings back into `Date` objects on its own.
+- `assignee_id: undefined` disappeared. `undefined` isn't a JSON value, so `JSON.stringify` leaves out any object property that holds it. Inside an array it would write `null` instead. A property set to `null` survives, as the last line shows.
 
-## TypeScript describes expectations; validation checks values
+The `decoded: unknown` annotation matters too. `JSON.parse` returns `any`, a type that lets you read any property without complaint. **`unknown`** is the opposite: TypeScript lets the value exist, but it won't let you read `decoded.created_at` until your code has checked what the value actually is. That's the right type for anything that comes from outside your program.
 
-Suppose a server returns `"status": "waiting"` when the client only understands `"open"` and `"completed"`. Declaring an interface does not reject that value at runtime. TypeScript types do not survive as automatic JSON checks in the running JavaScript.
+## Two kinds of dates
 
-Angular's `http.get<TaskDto>(...)` has the same limitation: **the generic type asserts an expected response type; `HttpClient` does not validate that the response matches it**. That expression alone is also not a complete request workflow. The runnable example below uses fixtures so it needs no RxJS knowledge or HTTP setup.
+The task is due on October 6. It isn't due at midnight in some particular city; it's due on that day for everyone. Its creation time is different: it happened at one exact moment, and people in different places write that moment down as different clock times.
 
-At an external boundary, use **`unknown`**: a TypeScript type that allows a value to arrive without granting permission to read it as a task. It makes code establish the value's shape before using its properties. It does not perform validation itself.
+Three terms describe instants:
 
-A schema supplies the checks. A **refinement** adds a condition to an already described kind of value—for example, requiring a string to contain more than spaces. This example uses Zod, as in the forms article.
+- **UTC** is the reference clock that time zones are measured from. The `Z` at the end of `2026-10-06T00:30:00Z` means "this clock time is in UTC".
+- A **time-zone offset** such as `+09:00` says the written clock time is nine hours ahead of UTC. So `2026-10-06T09:30:00+09:00` and `2026-10-06T00:30:00Z` are the same instant.
+- A **time zone** such as `America/Los_Angeles` or `Asia/Tokyo` is a place's full set of rules, including daylight-saving changes, for turning an instant into a local clock time and calendar day. An offset only tells you the difference from UTC at one moment.
 
-The date checks have an explicit, narrow contract:
+A JavaScript `Date` holds an instant and nothing else: a count of milliseconds since the start of 1970 in UTC. It can't hold "October 6" without picking a moment, and it doesn't remember which offset the original string used. That's where a classic due-date bug comes from. Save this as `dates-check.ts` and run it the same way:
 
-- IDs are positive safe integers; titles and names must contain non-whitespace text.
-- `status` is exactly `open` or `completed`.
-- Calendar dates use `YYYY-MM-DD`, are real dates including leap-day rules, and have years **2000–2099**.
-- Creation timestamps have those same year bounds, hours/minutes/seconds, and either `Z` or a numeric offset. This contract allows no fractional seconds.
+```ts
+const naiveDue = new Date("2026-10-06");
 
-An **instant** is a particular moment on the timeline. **UTC** is the time reference represented by `Z`. A **time-zone offset** such as `+09:00` says that the written clock time is nine hours ahead of UTC. `2026-10-06T09:30:00+09:00` and `2026-10-06T00:30:00Z` describe the same instant. An offset is not a complete time zone with its historical and daylight-saving rules.
+console.log(
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    dateStyle: "medium",
+  }).format(naiveDue),
+);
+// Oct 5, 2026 — wrong for a task due on October 6.
 
-Save the response checks and application mapping together in `task-models.ts`:
+console.log(
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    dateStyle: "medium",
+  }).format(naiveDue),
+);
+// Oct 6, 2026 — the bug can be hidden in another zone.
+```
+
+For a date-only string like `"2026-10-06"`, JavaScript picks UTC midnight as the moment. Los Angeles is seven hours behind UTC in October, so at that moment it's still the evening of October 5 there, and the formatter prints Oct 5. Tokyo is ahead of UTC, so it prints Oct 6 and hides the bug. If you left out `timeZone`, the formatter would use whatever zone the computer is set to, so the bug would show up for some people and not for others.
+
+So this example keeps the due date as its `YYYY-MM-DD` string in the frontend task, in the editor and in the update request. Only the creation time becomes a `Date`. When the row needs a readable due date, it formats the string in UTC, the same zone JavaScript used to parse it, so the day can't shift. You'll see that helper in the [row section](#shaping-the-task-for-the-row).
+
+## Checking the response at runtime
+
+Suppose the server starts sending `"status": "waiting"`, but the frontend only knows `"open"` and `"completed"`. A TypeScript interface won't catch that. Types exist only while your code compiles. The JavaScript that runs in the browser has no trace of them, so nothing compares the response against your interface.
+
+Angular's `HttpClient` works the same way. When you write
+
+```ts
+this.http.get<TaskDto>("/api/tasks/41");
+```
+
+the `<TaskDto>` part is a generic type argument, and it's you telling TypeScript "trust me, this response is a `TaskDto`". Angular's documentation calls it a type assertion: `HttpClient` parses the JSON, but it doesn't check that the result matches the type. If the server sends `"waiting"`, your code receives `"waiting"`, typed as if that couldn't happen. The example in this article uses a fake server instead of `HttpClient`, so you can run it without RxJS or an HTTP setup, but it treats the fake server's reply exactly the way it would treat a reply from `HttpClient`: as `unknown` until it's checked.
+
+To actually check a value, you need code that runs. A **schema** is an object that describes the shape you expect and can test a value against that description at runtime. This example uses [Zod](https://zod.dev/), the schema library from the forms article.
+
+Create `task-models.ts` and start with the schema for the response:
 
 ```ts
 import { z } from "zod";
 
 const idSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-export const titleSchema = z.string().refine(
-  (value) => {
-    return value.trim() !== "";
-  },
-  { error: "Enter a task title, not just spaces." },
-);
 
-export const calendarDateSchema = z.iso
-  .date()
-  .refine(
-    (value) => {
-      const year = Number(value.slice(0, 4));
+export const nonBlankTextSchema = z.string().refine((value) => {
+  return value.trim() !== "";
+});
 
-      return year >= 2000 && year <= 2099;
-    },
-    { error: "Use a real calendar date in 2000–2099." },
-  )
-  .brand<"CalendarDate">();
-
-const instantSchema = z.iso.datetime({ offset: true, precision: 0 }).refine(
-  (value) => {
-    const year = Number(value.slice(0, 4));
-
-    return year >= 2000 && year <= 2099 && Number.isFinite(Date.parse(value));
-  },
-  { error: "Use an instant in 2000–2099 with seconds and Z or an offset." },
-);
+export const calendarDateSchema = z.iso.date().brand<"CalendarDate">();
 
 export const taskResponseSchema = z.object({
   task_id: idSchema,
-  title: titleSchema,
+  title: nonBlankTextSchema,
   status: z.enum(["open", "completed"]),
   assignee: z
     .object({
       user_id: idSchema,
-      display_name: z.string().refine((name) => {
-        return name.trim() !== "";
-      }),
+      display_name: nonBlankTextSchema,
     })
     .nullable()
     .optional(),
   due_on: calendarDateSchema.nullable(),
-  created_at: instantSchema,
+  created_at: z.iso.datetime({ offset: true }),
 });
 
 export type TaskDto = z.infer<typeof taskResponseSchema>;
 export type CalendarDate = z.infer<typeof calendarDateSchema>;
+```
 
+What to notice:
+
+- `idSchema` accepts only whole positive numbers up to `Number.MAX_SAFE_INTEGER`, which is 2^53 − 1. Above that, JavaScript numbers can't represent every integer exactly, so two different IDs could turn into the same number.
+- `.refine` adds a condition of your own to a schema. Here the string must contain something other than spaces, so `"   "` fails.
+- `z.enum(["open", "completed"])` accepts exactly those two strings. `"waiting"` fails.
+- `.nullable()` allows `null`, and `.optional()` allows the property to be missing. `assignee` uses both, because both cases mean something.
+- `z.iso.date()` accepts a real `YYYY-MM-DD` calendar date, so `2026-02-30` fails. `z.iso.datetime({ offset: true })` accepts a date and time that ends in `Z` or an offset like `+09:00`. It rejects one with no time reference at all, such as `2026-10-06T00:30:00`, which JavaScript would otherwise read as local time on whatever computer runs the code.
+- `.brand<"CalendarDate">()` gives checked calendar strings their own TypeScript type, `CalendarDate`. At runtime the value is still a plain string, but TypeScript won't accept an ordinary string where a `CalendarDate` is expected. So the way to get one is to run a string through the schema.
+- `z.infer` builds the TypeScript type from the schema. Because `TaskDto` comes from the same object that does the checking, the type and the checks can't drift apart.
+
+If the server adds a field this frontend doesn't know about, `z.object` leaves it out of the checked result. So new fields don't break the frontend, and they don't sneak into it either.
+
+## `null`, missing, and empty mean different things
+
+The `assignee` field can arrive in three valid ways, plus one invalid one:
+
+| In the response        | What it means in this example      | What the frontend keeps           |
+| ---------------------- | ---------------------------------- | --------------------------------- |
+| No `assignee` property | The server didn't say              | `{ kind: "omitted" }`             |
+| `"assignee": null`     | The task has no assignee           | `{ kind: "unassigned" }`          |
+| An assignee object     | This person is assigned            | `{ kind: "assigned", user: ... }` |
+| `"assignee": ""`       | Not a valid response               | The schema rejects it             |
+
+Say `dto` holds a response that passed the schema. The tempting way to turn its `assignee` into a label is one line:
+
+```ts
+const assigneeLabel = dto.assignee?.display_name ?? "Unassigned";
+```
+
+`?.`, called optional chaining, gives back `undefined` instead of throwing when `dto.assignee` is `null` or `undefined`. `??`, called nullish coalescing, then replaces `null` or `undefined` with `"Unassigned"`. The line never crashes, which is why it looks right. But it turns both `null` and a missing property into "Unassigned", and a missing `assignee` doesn't mean the task is unassigned. It means the server didn't include that information. A server might, for example, leave assignments out for people who aren't allowed to see them. Showing "Unassigned" then tells the person something that might be false.
+
+So the frontend keeps all three cases, and the row shows "Assignment not included" when the field is missing. `?.` and `??` are useful operators, but they can't know what a missing value means. That has to be decided first, and then written down in the types.
+
+Empty strings need the same care. An empty title is invalid, and the schema rejects it. But later, in the editor, an empty due-date field is how a person says "no due date". The same `""` means different things in different fields, so each field's meaning has to be decided on its own.
+
+## Mapping the response into the frontend `Task`
+
+Now give the frontend its own task type. Add the assignment type to `task-models.ts`, below the schema:
+
+```ts
 export type Assignment =
   | { kind: "omitted" }
   | { kind: "unassigned" }
   | { kind: "assigned"; user: { id: number; name: string } };
+```
 
+This is a **tagged union**: a type that's one of several object shapes, where each shape carries a `kind` property with its own fixed string. When code checks `assignment.kind === "assigned"`, TypeScript knows that inside that branch the object is the third shape, so `assignment.user` exists. Outside that branch, reading `user` is a compile error, which is exactly what stops you from reading a name from an unassigned task.
+
+Next, add the task itself and the function that maps a checked response into it:
+
+```ts
 export interface Task {
   id: number;
   title: string;
@@ -268,136 +303,70 @@ export function toTask(dto: TaskDto): Task {
     createdAt: new Date(dto.created_at),
   };
 }
+```
 
-export type Confirmation = { kind: "confirmed"; task: Task } | { kind: "invalid-response" };
+What to notice:
 
-export function decodeTask(incoming: unknown): Confirmation {
+- `toTask` renames `task_id` to `id` and turns the status word into the boolean `done`. The rest of the frontend can ask `task.done` without knowing which words the server uses.
+- The `if` chain checks for a missing property before `null`, so the three cases from the table stay apart.
+- `dueDate` stays the checked calendar string. `createdAt` becomes a `Date` because `toTask` calls `new Date(...)`; JSON never does that for you.
+- `Task` is the frontend's own **application model**: the shape the rest of the frontend works with. It isn't a copy of the backend's domain model. It holds only what this client needs.
+
+Finally, add the one function every response goes through:
+
+```ts
+export type DecodedTask = { kind: "valid"; task: Task } | { kind: "invalid" };
+
+export function decodeTask(incoming: unknown): DecodedTask {
   const checked = taskResponseSchema.safeParse(incoming);
 
   if (!checked.success) {
-    return { kind: "invalid-response" };
+    return { kind: "invalid" };
   }
 
-  return { kind: "confirmed", task: toTask(checked.data) };
+  return { kind: "valid", task: toTask(checked.data) };
 }
 ```
 
-`safeParse` returns either checked data or validation issues. `z.infer` obtains the TypeScript type from the schema, rather than maintaining a separate interface that might drift from it. `.nullable()` allows `null`; `.optional()` allows an absent property or `undefined` in JavaScript. JSON itself cannot transmit `undefined`.
+`safeParse` returns a result object instead of throwing when the data fails validation. It's either `{ success: true, data }` with the checked, typed data, or `{ success: false, error }` with a list of what failed. `decodeTask` takes `unknown`, so you can hand it the raw parsed JSON, and it gives back another tagged union: a `Task`, or a plain "invalid". An invalid response doesn't become an empty title, "Unassigned" or today's date; the page shows that something went wrong. A real application would also log `checked.error` somewhere useful for debugging, without showing those details on the page.
 
-The `CalendarDate` **brand** is a TypeScript marker distinguishing a checked calendar string from arbitrary text. It does not change the runtime string or validate a type assertion. Obtain it by parsing the schema, not by casting an unchecked string.
-
-Zod's ISO checks inspect format and calendar validity before conversion. `Number.isFinite(Date.parse(...))` is an additional representability check, not permission to accept arbitrary date-shaped strings. The exact checks reject February 30 and a creation timestamp without a zone. The 2000–2099 bounds are a chosen demonstration contract, not the universal range of calendar dates.
-
-**Validation checks the contract; mapping chooses the client shape.** Here mapping renames `task_id`, converts the status into a boolean, selects nested assignee fields, preserves the calendar string, and explicitly constructs a `Date` for the instant. Zod's ordinary object schema strips unrecognized keys; they do not become application fields automatically. This policy accepts additive response fields while checking the fields this client uses.
-
-For the response shown earlier, the resulting frontend record has this shape. This is an illustration of the mapped values, not another file to run:
+For the response at the top of the article, `decodeTask` gives back this task:
 
 ```text
 Frontend Task:
   id:          41
-  title:       "Review the task contract"
+  title:       "Review the CSS layout"
   done:        false
   assignment:  { kind: "assigned", user: { id: 7, name: "Mina Patel" } }
   dueDate:     "2026-10-06"               (checked calendar string)
-  createdAt:   Date representing 2026-10-06T00:30:00Z
+  createdAt:   Date for 2026-10-06T00:30:00Z
 ```
 
-The client can now ask `task.done` without knowing the wire's status words, while still distinguishing omitted assignment information from no assignment. Its `createdAt` is a JavaScript `Date` because the mapper constructed one—not because JSON reconstructed it.
+## Shaping the task for the row
 
-An invalid response returns a visible failure path. It does not become an empty title, “Unassigned,” or today's date. For this small interface, `Confirmation` does not expose schema issues to the person; a real application's diagnostics can retain those issues without displaying raw internals in the page.
+The row on screen needs text: "Active", "Assigned to Mina Patel", "Due Oct 6, 2026". Data prepared for one piece of the screen like this is called a **view model**. It's derived from the `Task`, and it's only useful to the component that displays it.
 
-## Missing, null, and empty have contract meanings
-
-The assignment alternatives are chosen meanings, not a JavaScript trick:
-
-| Read response          | Meaning in this contract           | Frontend representation           |
-| ---------------------- | ---------------------------------- | --------------------------------- |
-| No `assignee` property | Assignment information was omitted | `{ kind: "omitted" }`             |
-| `"assignee": null`     | The task has no assignee           | `{ kind: "unassigned" }`          |
-| Assignee object        | This person is assigned            | `{ kind: "assigned", user: ... }` |
-| `"assignee": ""`       | Invalid response                   | Reject it                         |
-
-“Omitted” does not mean “definitely unassigned.” The row will say “Assignment not included” rather than silently present incorrect knowledge.
-
-The update contract is different:
-
-| Update representation                 | Meaning in this contract        |
-| ------------------------------------- | ------------------------------- |
-| A property is omitted                 | Leave that field alone          |
-| `"assignee_id": null`                 | Clear the assignment            |
-| `"due_on": null`                      | Clear the due date              |
-| A new title, status, or calendar date | Replace that field              |
-| `"title": null` or `"title": ""`      | Invalid; title is not clearable |
-
-This bounded editor offers only **keep or clear** for assignment, not selecting another user. Its update type will describe that subset. A larger assignment operation could accept a user ID, but this consumer does not need it.
-
-For example, these actual JSON requests do different things:
-
-```json
-{ "title": "Review the mapping" }
-```
-
-```json
-{ "title": "Review the mapping", "assignee_id": null }
-```
-
-The first changes the title without touching assignment. The second also clears assignment. Assigning `undefined` to an object property would cause `JSON.stringify` to omit it, as the earlier runnable check demonstrates; the mapper below simply does not add it for “keep.”
-
-An editor's genuinely empty date string has yet another role: this editor deliberately interprets `""` as “clear the due date” and maps it to request `null`, after ruling out incomplete native input. An empty title is invalid. Empty is not a universal synonym for optional.
-
-Optional chaining avoids some property-access failures. `??` chooses a replacement for `null` or `undefined`. Neither can decide whether omitted information means “unknown” or “none,” or whether an omitted request means “leave alone.” Those meanings must come from the contract first.
-
-## Dates need meaning before conversion
-
-The task is due **on October 6**, not at midnight in a particular city. Its creation timestamp, however, identifies one instant.
-
-A JavaScript `Date` stores an instant as a number of milliseconds relative to the start of 1970 in UTC. It does not store a standalone calendar date or retain the original offset. Formatting that instant needs a **display time zone**: rules for turning the moment into the clock and calendar readings at a location. `America/Los_Angeles` and `Asia/Tokyo` are examples.
-
-Here is the calendar bug, reproduced with an explicit zone instead of depending on the machine running the check. Save this independent example as `dates-check.ts`:
+You'll build `task-presentation.ts` over this section and the next one; each slice goes into the same file. Start with the due-date formatter promised in the dates section:
 
 ```ts
-const naiveDue = new Date("2026-10-06");
-
-console.log(
-  new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    dateStyle: "medium",
-  }).format(naiveDue),
-);
-// Oct 5, 2026 — wrong for a task due on October 6.
-
-console.log(
-  new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Tokyo",
-    dateStyle: "medium",
-  }).format(naiveDue),
-);
-// Oct 6, 2026 — the bug can be hidden in another zone.
-```
-
-For this date-only format, JavaScript interprets the string as **UTC midnight**. Los Angeles is behind UTC at this time, so formatting that invented instant gives the previous day. Omitting `timeZone` would use the environment's local zone and make the bug depend on the person's environment.
-
-Instead, keep the calendar string in application state, the editor, and the request. For localized presentation only, we can construct a temporary UTC value and format it **in UTC too**. That is a formatting bridge, not a new claim that the due date is an instant. The helper below accepts only our checked 2000–2099 calendar contract, avoiding the `Date.UTC` behavior that interprets years 0–99 as 1900–1999.
-
-Save the projections and outgoing mapper in `task-presentation.ts`:
-
-```ts
-import { z } from "zod";
-import { calendarDateSchema, titleSchema } from "./task-models";
 import type { CalendarDate, Task } from "./task-models";
 
 export function formatCalendarDate(value: CalendarDate, locale: string): string {
-  const year = Number(value.slice(0, 4));
-  const month = Number(value.slice(5, 7));
-  const day = Number(value.slice(8, 10));
-  const bridge = new Date(Date.UTC(year, month - 1, day));
+  // A date-only string parses as UTC midnight, so format it in UTC too.
+  const utcMidnight = new Date(value);
 
   return new Intl.DateTimeFormat(locale, {
     timeZone: "UTC",
     dateStyle: "medium",
-  }).format(bridge);
+  }).format(utcMidnight);
 }
+```
 
+The `Date` here exists only for formatting. It's parsed and formatted in the same zone, so the calendar day comes back unchanged. The function has no time-zone parameter on purpose: a due date is the same day for everyone, so the viewer's zone mustn't change it.
+
+Then add the row's view model and the function that derives it:
+
+```ts
 export interface TaskRowModel {
   title: string;
   completionLabel: string;
@@ -441,7 +410,20 @@ export function toTaskRow(task: Task): TaskRowModel {
     createdLabel: `Created ${created} (America/Los_Angeles)`,
   };
 }
+```
 
+What to notice:
+
+- Every label is decided here, so the row's template only displays strings. Changing the wording or the date format means changing this function, not the task data.
+- The `kind` checks are the tagged union at work. In the last branch, TypeScript knows `task.assignment.user` exists.
+- The labels use `en-US`, and the creation time is shown in Los Angeles with the zone named on screen, so the output is the same wherever you run it. A real product picks its own locale, and usually shows the viewer's own zone by leaving out `timeZone`.
+- The creation instant can fall on different days for different viewers. 00:30 UTC on October 6 is 17:30 on October 5 in Los Angeles and 09:30 on October 6 in Tokyo. That's the same moment, not a moved deadline, so a `Date` is the right type for it.
+
+## Sending an edit back
+
+The editor needs yet another shape. The row needs finished labels; the editor needs the person's unfinished text, which can be invalid for a while, plus a choice about what to change. That's the **draft**, which the [forms article](/dump/blog/forms-and-validation/) keeps apart from the accepted task. Add it to `task-presentation.ts`:
+
+```ts
 export interface TaskDraft {
   title: string;
   done: boolean;
@@ -458,9 +440,44 @@ export function toTaskDraft(task: Task): TaskDraft {
 
   return { title: task.title, done: task.done, dueText, assigneeAction: "keep" };
 }
+```
 
+`dueText` is a plain `string` because, while someone types, it can be `"2026-10-"`. An empty `dueText` means "no due date". `assigneeAction` is a choice instead of a person: this editor can keep the assignee or clear it, but it can't pick someone else.
+
+The update request is a different DTO from the response. It doesn't carry the assignee's name or the creation time; it carries only the changes the server should make. In this example, a missing property and `null` mean different things again:
+
+| In the update request                 | What it means in this example      |
+| ------------------------------------- | ---------------------------------- |
+| A property is missing                 | Leave that field alone             |
+| `"assignee_id": null`                 | Clear the assignment               |
+| `"due_on": null`                      | Clear the due date                 |
+| A new title, status, or calendar date | Replace that field                 |
+| `"title": null` or `"title": ""`      | Invalid; a task always has a title |
+
+So these two requests do different things:
+
+```json
+{ "title": "Review the mapping" }
+```
+
+```json
+{ "title": "Review the mapping", "assignee_id": null }
+```
+
+The first changes the title and leaves the assignment alone. The second also clears the assignment.
+
+Now add the draft check and the function that builds the request. These imports go at the top of `task-presentation.ts`, next to the existing one:
+
+```ts
+import { z } from "zod";
+import { calendarDateSchema, nonBlankTextSchema } from "./task-models";
+```
+
+And this goes at the bottom of the file:
+
+```ts
 export const draftSchema = z.object({
-  title: titleSchema,
+  title: nonBlankTextSchema,
   done: z.boolean(),
   dueText: z.union([z.literal(""), calendarDateSchema]),
   assigneeAction: z.enum(["keep", "clear"]),
@@ -501,41 +518,20 @@ export function toTaskUpdate(draft: CheckedDraft): UpdateTaskDto {
 }
 ```
 
-The row deliberately uses `en-US` labels and displays creation in Los Angeles, naming that zone on screen. A product would choose its own locale and display-zone policy. The due-date formatter has **no viewer-zone parameter** because changing the viewer's zone must not change this calendar day.
+What to notice:
 
-The creation instant may legitimately display on different days. This task was created at October 6, 00:30 UTC: October 5, 17:30 in Los Angeles, and October 6, 09:30 in Tokyo. That is the same moment, not a shifted deadline.
+- `draftSchema` checks the draft before anything is sent: the title isn't blank, and `dueText` is either empty or a real calendar date. Its result type, `CheckedDraft`, has `dueText: "" | CalendarDate`, so `toTaskUpdate` can't receive an unchecked date.
+- `toTaskUpdate` lists exactly what gets sent: title, status and due date every time, and `assignee_id: null` only when the person chose Clear. For Keep, the property is never added, so it's missing from the JSON.
+- An empty `dueText` becomes `due_on: null`, which clears the due date.
+- The task ID isn't in the body; a real server would take it from the request URL. The creation time can't be edited, so it's never sent. Row labels and the row's open or closed details never come near the request.
 
-The editor reads the native date input's string `value`, not `valueAsDate`. A browser may display a localized date in the control, but a complete nonempty value is normalized to `YYYY-MM-DD`.
+This is where one shared shape everywhere would hurt. If the API exposed the database columns directly, renaming `title_text` would break every client. If components read `status === "completed"` all over the frontend, a change in the server's status words would touch all of them. If labels like "Due Oct 6, 2026" were stored in the task, changing the date format would mean changing the data. And if the editor sent its whole state, help text and screen flags would turn up as request fields.
 
-An empty `value` alone does **not** prove that the person cleared the date. For example, deleting only the month can leave a day and year on screen while `value` is `""`. The browser reports that incomplete or unparseable entry through `validity.badInput`: it cannot turn the current entry into a valid date string.
+### The server's reply is another response to check
 
-The editor therefore distinguishes three cases:
+The server might not store the request exactly as sent. It could trim the title or apply one of its own rules. So the page only replaces its task with what the server sends back, and that reply is JSON from outside the program again. It goes through `decodeTask`, exactly like the first response.
 
-- A complete nonempty value can enter the draft and undergo the calendar schema checks.
-- A genuinely empty control has `value === ""` and `badInput === false`; its draft string can deliberately map to request `null`.
-- Incomplete input has `badInput === true`, even though `value` may be `""`. It needs correction, not a clear request.
-
-On input, the editor leaves the draft's last usable date string unchanged when `badInput` is true. Copying that incomplete `""` into the draft could make Angular write it back into the control and erase the remaining date parts and bad-input state. On submit, it reads the control's current `value` and `badInput` together, and validates that date value alongside the other draft fields. An incomplete entry cannot submit the old draft date either. Reading the current value also handles clearing the remaining parts: the serialized value can stay `""` throughout that edit, without another input event. No extra synchronized flag is needed.
-
-## Give mapping an owner, and follow edits back out
-
-Each boundary has work of its own:
-
-| Owner                                | Work                                                                       |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| Backend storage/application boundary | Translate stored rows and relationships into application concepts          |
-| Backend API boundary                 | Validate real requests, enforce permissions/rules, construct response DTOs |
-| Frontend API boundary                | Validate unknown responses and map them into usable frontend tasks         |
-| Row/editor                           | Derive display data, hold a draft, construct deliberate edits              |
-| Page                                 | Keep the confirmed frontend task used by the rest of the interface         |
-
-Mixing these jobs creates concrete coupling. Exposing storage columns directly makes schema changes into public API changes. Reading `status === "completed"` throughout client logic spreads a transport convention. Storing localized labels as task data mixes display policy with meaning. Serializing the entire editor or row can send help text and expansion state as accidental request fields.
-
-`toTaskUpdate` instead lists the data this operation sends. It includes title, completion, and due date every time, and includes assignment only for an explicit clear. The task ID would identify the resource in a real endpoint URL; the creation timestamp is read-only. Row labels and `detailsOpen` never enter the request.
-
-Do not assume that a receiver stored the draft unchanged. It might normalize the title or apply a business rule. Only its confirmed response should replace accepted data, and that response is **another external value** needing the same validation and mapping as the first read.
-
-To make that visible without introducing a backend, save this bounded simulation in `demo-exchange.ts`:
+To try this without a backend, save a fake server in `fake-server.ts`:
 
 ```ts
 import { taskResponseSchema } from "./task-models";
@@ -543,7 +539,7 @@ import type { UpdateTaskDto } from "./task-presentation";
 
 const initialResponse = `{
   "task_id": 41,
-  "title": "Review the task contract",
+  "title": "Review the CSS layout",
   "status": "open",
   "assignee": { "user_id": 7, "display_name": "Mina Patel" },
   "due_on": "2026-10-06",
@@ -552,17 +548,16 @@ const initialResponse = `{
 
 let responseText = initialResponse;
 
-export function loadDemoTask(): unknown {
+export function fetchTask(): unknown {
   return JSON.parse(responseText);
 }
 
-export async function simulateUpdate(request: UpdateTaskDto): Promise<unknown> {
-  // In-memory response simulation only. No HTTP, database, or backend implementation.
+export async function sendUpdate(request: UpdateTaskDto): Promise<unknown> {
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 300);
   });
 
-  const current = taskResponseSchema.parse(loadDemoTask());
+  const current = taskResponseSchema.parse(fetchTask());
   const next = { ...current };
 
   if (request.title !== undefined) {
@@ -583,63 +578,49 @@ export async function simulateUpdate(request: UpdateTaskDto): Promise<unknown> {
 
   responseText = JSON.stringify(next);
 
-  return loadDemoTask();
+  return fetchTask();
 }
 ```
 
-This holds only JSON fixture text in memory and trims the returned title. Reloading resets it. It accepts the typed requests this demo constructs; it is **not** a real server's validation, authorization, persistence, or error-handling implementation. Its JSON string also demonstrates that the next response still needs interpretation.
+What to notice:
 
-The page will run `decodeTask` on that returned `unknown` before changing its accepted task. If validation fails, the editor keeps its draft and shows “Nothing accepted.” A malformed confirmation does not prove that a real server stored nothing; it means the client cannot safely accept that response. Reconciling such a real server operation is outside this fixture's scope.
+- The fake server keeps the task as JSON text in memory, so reloading the page resets it.
+- `sendUpdate` waits 300 milliseconds to imitate a network delay, applies the request field by field, and trims the title the way a real server might.
+- It returns freshly parsed JSON typed as `unknown`, so the page has to check the reply before using it.
+- It reads its own stored text with `parse`, which throws on invalid data instead of returning a result. That's fine for data the fake server wrote itself.
 
-## Connect the model to Angular without imposing machinery
+It skips everything a real server does, such as checking permissions, validating the request, or saving to a database.
 
-A **signal** holds a value and notifies Angular when it changes. A **computed** signal derives a value from other signals rather than holding another independently writable copy. Calling a signal, such as `task()`, reads it.
+## The Angular components
 
-The row receives an application `Task`, not raw JSON. Its computed projection supplies labels; its local `detailsOpen` signal belongs only to that row. The editor holds a separate `TaskDraft`. Its `linkedSignal` starts from the supplied task and deliberately preserves unfinished edits when the same task ID receives a replacement record.
+Three components display and edit the task: the row, the editor, and the page that holds both. They use `input`, `signal`, `computed` and `linkedSignal` as in the [composition article](/dump/blog/angular-component-composition/). The examples leave out styling classes, so they render with the browser's default styles.
 
-Save these three consumers together in `task-page.ts`. They have real ownership boundaries, but need no class for every model or generic mapping framework:
+### The row
+
+Save the row in `task-row.ts`:
 
 ```ts
-import {
-  Component,
-  Injector,
-  afterNextRender,
-  computed,
-  inject,
-  input,
-  linkedSignal,
-  signal,
-} from "@angular/core";
-import { loadDemoTask, simulateUpdate } from "./demo-exchange";
-import { decodeTask } from "./task-models";
-import type { Confirmation, Task } from "./task-models";
-import { draftSchema, toTaskDraft, toTaskRow, toTaskUpdate } from "./task-presentation";
-import type { CheckedDraft, TaskDraft } from "./task-presentation";
+import { Component, computed, input, signal } from "@angular/core";
+import type { Task } from "./task-models";
+import { toTaskRow } from "./task-presentation";
 
 @Component({
   selector: "task-row",
-  host: { class: "block min-w-0" },
   template: `
-    <article
-      class="space-y-3 rounded-lg border border-line bg-surface p-4"
-      aria-labelledby="task-title"
-    >
-      <h3 id="task-title" class="font-semibold [overflow-wrap:anywhere]">{{ row().title }}</h3>
+    <article aria-labelledby="task-title">
+      <h3 id="task-title">{{ row().title }}</h3>
       <p>{{ row().completionLabel }}</p>
-      <p class="[overflow-wrap:anywhere]">{{ row().assigneeLabel }}</p>
+      <p>{{ row().assigneeLabel }}</p>
       <p>{{ row().dueLabel }}</p>
       <button
         type="button"
-        class="min-h-11 max-w-full rounded-lg border border-line px-3 py-2 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         [attr.aria-expanded]="detailsOpen()"
         aria-controls="task-created"
         (click)="detailsOpen.set(!detailsOpen())"
       >
         Creation details
       </button>
-      <p id="task-created" class="[overflow-wrap:anywhere]" [hidden]="!detailsOpen()">
-        {{ row().createdLabel }}
-      </p>
+      <p id="task-created" [hidden]="!detailsOpen()">{{ row().createdLabel }}</p>
     </article>
   `,
 })
@@ -648,126 +629,180 @@ export class TaskRow {
   readonly row = computed(() => toTaskRow(this.task()));
   readonly detailsOpen = signal(false);
 }
+```
+
+What to notice:
+
+- The row receives a checked `Task`, never the JSON, so it can't see the server's field names or status words.
+- `row` is a computed signal over `toTaskRow`, so the labels recalculate whenever the page hands the row a new task.
+- `detailsOpen` belongs only to this row. It isn't part of the `Task`, and it never goes into a request.
+
+### The editor
+
+The editor is deliberately simpler than the one in the forms article: it checks the draft when you press Save, and clears a field's error message when that field changes. It doesn't track which fields you've visited, and it doesn't use the Signal Forms API from that article.
+
+The due date uses a plain text field. A date picker, `<input type="date">`, is friendlier, but it reports a half-typed date as an empty string, the same value as a cleared field. Telling those two apart takes extra code that's outside this article's topic. With a text field, the string in the field and the string in the draft are always the same.
+
+The editor lives in two files: the class in `task-editor.ts`, and its template in `task-editor.html`, which the class points at with `templateUrl`. The template is long enough that a separate file is easier to read. The slices below show the parts that matter for this article; the full files follow them.
+
+#### Binding the draft to the fields
+
+The draft starts from the task and changes as you type:
+
+```ts
+  readonly task = input.required<Task>();
+  readonly draft = linkedSignal(() => toTaskDraft(this.task()));
+
+  setTitle(title: string) {
+    this.draft.update((draft) => ({ ...draft, title }));
+    this.titleError.set("");
+    this.status.set("");
+  }
+```
+
+Each field in the template reads its value from the draft and writes back to it:
+
+```html
+  <input
+    #titleInput
+    id="draft-title"
+    name="title"
+    type="text"
+    required
+    [value]="draft().title"
+    [readonly]="busy()"
+    aria-describedby="title-help title-error"
+    [attr.aria-invalid]="titleError() !== ''"
+    (input)="setTitle(titleInput.value)"
+  />
+```
+
+What to notice:
+
+- `draft` is a `linkedSignal`: a signal you can write to, which resets to `toTaskDraft(this.task())` whenever the page passes in a new task. Here the page replaces the task only after a confirmed save, which is exactly when the draft should reset to the confirmed values, so this simple form is enough. The composition article shows a stricter reset rule for pages where the task can change while someone is still editing.
+- `[value]` shows the draft's title, and `(input)` sends every keystroke to `setTitle`, which updates the draft and clears the title's old error message. The row keeps showing the accepted task, because typing only ever writes to the draft.
+- The checkbox, due-date field and assignment select follow the same pattern with `setDone`, `setDue` and `setAssignment`. A `<select>` always gives you a string, so `setAssignment` checks it's `"keep"` or `"clear"` before storing it.
+- `aria-describedby` connects the field to its help and error text, and `aria-invalid` marks it while an error is showing. The [accessibility article](/dump/blog/accessibility-in-practice/) explains those attributes.
+
+#### Checking the draft on Save
+
+`save` starts by running the draft through `draftSchema`:
+
+```ts
+    const checked = draftSchema.safeParse(this.draft());
+
+    this.titleError.set("");
+    this.dueError.set("");
+
+    if (!checked.success) {
+      for (const issue of checked.error.issues) {
+        if (issue.path[0] === "title") {
+          this.titleError.set("Enter a task title, not just spaces.");
+        }
+
+        if (issue.path[0] === "dueText") {
+          this.dueError.set("Write a real date as YYYY-MM-DD, or leave it blank.");
+        }
+      }
+
+      this.status.set("Check the fields. Nothing was sent.");
+      afterNextRender(
+        () => {
+          if (this.titleError() !== "") {
+            titleInput.focus();
+
+            return;
+          }
+
+          dueInput.focus();
+        },
+        { injector: this.injector },
+      );
+
+      return;
+    }
+```
+
+What to notice:
+
+- Nothing is sent until the draft passes. Each issue's `path` names the field that failed, so the editor can put a message next to the right input.
+- `afterNextRender` runs its callback after Angular next updates the page, so focus moves to the first field with a problem once the error text is on screen. It normally finds Angular's injector by itself, but only while the component is being created, and `save` runs much later. That's why the component keeps its injector from `inject(Injector)` and passes it in.
+
+#### Sending the draft to the page
+
+When the draft passes, the editor hands it to the page:
+
+```ts
+  readonly submitDraft = input.required<(draft: CheckedDraft) => Promise<DecodedTask>>();
+```
+
+```ts
+    this.busy.set(true);
+    this.status.set("Saving…");
+
+    try {
+      const result = await this.submitDraft()(checked.data);
+
+      if (result.kind === "invalid") {
+        this.status.set("The server's reply failed its checks. The task wasn't updated; your draft is kept.");
+
+        return;
+      }
+
+      this.status.set("Saved. The form now shows what the server confirmed.");
+    } finally {
+      this.busy.set(false);
+      afterNextRender(
+        () => {
+          titleInput.focus();
+        },
+        { injector: this.injector },
+      );
+    }
+```
+
+What to notice:
+
+- `submitDraft` is an input that holds a function. In `this.submitDraft()(checked.data)`, the first `()` reads the input, which gives back the function; the second `(checked.data)` calls it. The page decides what saving means, and the editor only calls it and reads the result.
+- `checked.data` is a `CheckedDraft`, so the page can only ever receive a draft that passed the schema.
+- An invalid reply leaves the draft alone, so nothing you typed is lost. A valid reply makes the page replace its task, and the `linkedSignal` resets the draft to the confirmed values.
+- While `busy` is true, the text fields are `readonly` and the checkbox, select and buttons are disabled. An early `if (this.busy())` return at the top of `save` blocks a second save, and `finally` unlocks the form even if `submitDraft` throws. An unexpected error isn't reported as an invalid reply.
+
+Discard copies the page's current task back into the draft, so after a successful save it restores the saved values, not the task the page started with. Pressing Enter in the title field submits the form, like any native form.
+
+Here are the full editor files:
+
+<details>
+<summary>Full <code>task-editor.ts</code></summary>
+
+```ts
+import {
+  Component,
+  Injector,
+  afterNextRender,
+  inject,
+  input,
+  linkedSignal,
+  signal,
+} from "@angular/core";
+import type { DecodedTask, Task } from "./task-models";
+import { draftSchema, toTaskDraft } from "./task-presentation";
+import type { CheckedDraft } from "./task-presentation";
 
 @Component({
   selector: "task-editor",
-  host: { class: "block min-w-0" },
-  template: `
-    <form class="space-y-3" novalidate (submit)="save($event, titleInput, dueInput)">
-      <label for="draft-title" class="block font-medium">Task title (required)</label>
-      <p id="title-help" class="text-muted">
-        Use more than whitespace. Confirmation trims the ends.
-      </p>
-      <input
-        #titleInput
-        id="draft-title"
-        name="title"
-        type="text"
-        required
-        class="block min-h-11 w-full min-w-0 rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        [value]="draft().title"
-        [readonly]="busy()"
-        aria-describedby="title-help title-error"
-        [attr.aria-invalid]="titleError() !== ''"
-        (input)="setTitle(titleInput.value)"
-      />
-      <p id="title-error" class="min-h-6 [overflow-wrap:anywhere] text-accent" aria-live="polite">
-        {{ titleError() }}
-      </p>
-
-      <label class="flex min-h-11 items-start gap-3 py-2">
-        <input
-          #doneInput
-          type="checkbox"
-          name="done"
-          class="mt-1 size-5 shrink-0 accent-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          [checked]="draft().done"
-          [disabled]="busy()"
-          (change)="setDone(doneInput.checked)"
-        />
-        <span>Completed</span>
-      </label>
-
-      <label for="draft-due" class="block font-medium">Due date (optional)</label>
-      <p id="due-help" class="text-muted">A calendar day in 2000–2099. Leave blank to clear it.</p>
-      <input
-        #dueInput
-        id="draft-due"
-        name="due"
-        type="date"
-        min="2000-01-01"
-        max="2099-12-31"
-        class="block min-h-11 w-full min-w-0 max-w-full rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        [value]="draft().dueText"
-        [readonly]="busy()"
-        aria-describedby="due-help due-error"
-        [attr.aria-invalid]="dueError() !== ''"
-        (input)="setDue(dueInput)"
-      />
-      <p id="due-error" class="min-h-6 [overflow-wrap:anywhere] text-accent" aria-live="polite">
-        {{ dueError() }}
-      </p>
-
-      <label for="draft-assignment" class="block font-medium">Assignment change</label>
-      <p id="assignment-help" class="text-muted">
-        Keep sends no assignment change; clear sends an explicit null.
-      </p>
-      <select
-        #assignmentInput
-        id="draft-assignment"
-        name="assignment"
-        class="block min-h-11 w-full min-w-0 max-w-full rounded-lg border border-muted bg-surface px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        aria-describedby="assignment-help"
-        [value]="draft().assigneeAction"
-        [disabled]="busy()"
-        (change)="setAssignment(assignmentInput.value)"
-      >
-        <option value="keep">Keep</option>
-        <option value="clear">Clear</option>
-      </select>
-
-      <div class="flex flex-wrap gap-2">
-        <button
-          type="submit"
-          [disabled]="busy()"
-          class="min-h-11 min-w-0 max-w-full rounded-lg bg-accent px-4 py-2 font-medium text-page [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
-        >
-          Save task
-        </button>
-        <button
-          type="button"
-          [disabled]="busy()"
-          (click)="discard(titleInput, dueInput)"
-          class="min-h-11 min-w-0 max-w-full rounded-lg border border-line px-4 py-2 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
-        >
-          Discard edits
-        </button>
-      </div>
-      <p class="min-h-6 [overflow-wrap:anywhere]" role="status" aria-atomic="true">
-        {{ status() }}
-      </p>
-    </form>
-  `,
+  templateUrl: "./task-editor.html",
 })
 export class TaskEditor {
   readonly task = input.required<Task>();
-  readonly confirm = input.required<(draft: CheckedDraft) => Promise<Confirmation>>();
+  readonly submitDraft = input.required<(draft: CheckedDraft) => Promise<DecodedTask>>();
   readonly busy = signal(false);
   readonly titleError = signal("");
   readonly dueError = signal("");
   readonly status = signal("");
-  readonly #injector = inject(Injector);
+  private readonly injector = inject(Injector);
 
-  readonly draft = linkedSignal<Task, TaskDraft>({
-    source: this.task,
-    computation: (task, previous) => {
-      if (previous?.source.id === task.id) {
-        return previous.value;
-      }
-
-      return toTaskDraft(task);
-    },
-  });
+  readonly draft = linkedSignal(() => toTaskDraft(this.task()));
 
   setTitle(title: string) {
     this.draft.update((draft) => ({ ...draft, title }));
@@ -780,18 +815,10 @@ export class TaskEditor {
     this.status.set("");
   }
 
-  setDue(inputElement: HTMLInputElement) {
-    const incompleteDate = inputElement.validity.badInput;
-    const dueText = inputElement.value;
-
+  setDue(dueText: string) {
+    this.draft.update((draft) => ({ ...draft, dueText }));
     this.dueError.set("");
     this.status.set("");
-
-    if (incompleteDate) {
-      return;
-    }
-
-    this.draft.update((draft) => ({ ...draft, dueText }));
   }
 
   setAssignment(value: string) {
@@ -810,31 +837,23 @@ export class TaskEditor {
       return;
     }
 
-    const incompleteDate = dueInput.validity.badInput;
-    const dueText = dueInput.value;
-    const checked = draftSchema.safeParse({ ...this.draft(), dueText });
+    const checked = draftSchema.safeParse(this.draft());
 
     this.titleError.set("");
     this.dueError.set("");
 
-    if (!checked.success || incompleteDate) {
-      if (!checked.success) {
-        for (const issue of checked.error.issues) {
-          if (issue.path[0] === "title") {
-            this.titleError.set("Enter a task title, not just spaces.");
-          }
+    if (!checked.success) {
+      for (const issue of checked.error.issues) {
+        if (issue.path[0] === "title") {
+          this.titleError.set("Enter a task title, not just spaces.");
+        }
 
-          if (issue.path[0] === "dueText") {
-            this.dueError.set("Choose a real date in 2000–2099, or leave it blank.");
-          }
+        if (issue.path[0] === "dueText") {
+          this.dueError.set("Write a real date as YYYY-MM-DD, or leave it blank.");
         }
       }
 
-      if (incompleteDate) {
-        this.dueError.set("Complete the date, or clear all its parts.");
-      }
-
-      this.status.set("Check the fields. Nothing accepted.");
+      this.status.set("Check the fields. Nothing was sent.");
       afterNextRender(
         () => {
           if (this.titleError() !== "") {
@@ -845,64 +864,152 @@ export class TaskEditor {
 
           dueInput.focus();
         },
-        { injector: this.#injector },
+        { injector: this.injector },
       );
 
       return;
     }
 
     this.busy.set(true);
-    this.status.set("Waiting for the simulated confirmation…");
+    this.status.set("Saving…");
 
     try {
-      const result = await this.confirm()(checked.data);
+      const result = await this.submitDraft()(checked.data);
 
-      if (result.kind === "invalid-response") {
-        this.status.set("Invalid confirmation. Nothing accepted; your draft is kept.");
+      if (result.kind === "invalid") {
+        this.status.set("The server's reply failed its checks. The task wasn't updated; your draft is kept.");
 
         return;
       }
 
-      this.draft.set(toTaskDraft(result.task));
-      this.status.set("Confirmed response accepted. The draft now matches it.");
+      this.status.set("Saved. The form now shows what the server confirmed.");
     } finally {
       this.busy.set(false);
-      afterNextRender(() => titleInput.focus(), { injector: this.#injector });
+      afterNextRender(
+        () => {
+          titleInput.focus();
+        },
+        { injector: this.injector },
+      );
     }
   }
 
-  discard(titleInput: HTMLInputElement, dueInput: HTMLInputElement) {
-    const restored = toTaskDraft(this.task());
-
-    this.draft.set(restored);
-    dueInput.value = restored.dueText;
+  discard(titleInput: HTMLInputElement) {
+    this.draft.set(toTaskDraft(this.task()));
     this.titleError.set("");
     this.dueError.set("");
-    this.status.set("Draft restored to the current accepted task.");
+    this.status.set("Draft restored to the current task.");
     titleInput.focus();
   }
 }
+```
+
+</details>
+
+<details>
+<summary>Full <code>task-editor.html</code></summary>
+
+```html
+<form novalidate (submit)="save($event, titleInput, dueInput)">
+  <label for="draft-title">Task title (required)</label>
+  <p id="title-help">Use more than spaces. The server trims spaces from the ends.</p>
+  <input
+    #titleInput
+    id="draft-title"
+    name="title"
+    type="text"
+    required
+    [value]="draft().title"
+    [readonly]="busy()"
+    aria-describedby="title-help title-error"
+    [attr.aria-invalid]="titleError() !== ''"
+    (input)="setTitle(titleInput.value)"
+  />
+  <p id="title-error" aria-live="polite">{{ titleError() }}</p>
+
+  <label>
+    <input
+      #doneInput
+      type="checkbox"
+      name="done"
+      [checked]="draft().done"
+      [disabled]="busy()"
+      (change)="setDone(doneInput.checked)"
+    />
+    Completed
+  </label>
+
+  <label for="draft-due">Due date (optional)</label>
+  <p id="due-help">Write it as YYYY-MM-DD, for example 2026-10-06. Leave it blank to clear it.</p>
+  <input
+    #dueInput
+    id="draft-due"
+    name="due"
+    type="text"
+    [value]="draft().dueText"
+    [readonly]="busy()"
+    aria-describedby="due-help due-error"
+    [attr.aria-invalid]="dueError() !== ''"
+    (input)="setDue(dueInput.value)"
+  />
+  <p id="due-error" aria-live="polite">{{ dueError() }}</p>
+
+  <label for="draft-assignment">Assignment change</label>
+  <p id="assignment-help">Keep leaves the assignee alone. Clear removes the assignee.</p>
+  <select
+    #assignmentInput
+    id="draft-assignment"
+    name="assignment"
+    aria-describedby="assignment-help"
+    [value]="draft().assigneeAction"
+    [disabled]="busy()"
+    (change)="setAssignment(assignmentInput.value)"
+  >
+    <option value="keep">Keep</option>
+    <option value="clear">Clear</option>
+  </select>
+
+  <p>
+    <button type="submit" [disabled]="busy()">Save task</button>
+    <button type="button" [disabled]="busy()" (click)="discard(titleInput)">Discard edits</button>
+  </p>
+  <p role="status" aria-atomic="true">{{ status() }}</p>
+</form>
+```
+
+</details>
+
+### The page
+
+Save the page in `task-page.ts`:
+
+```ts
+import { Component, signal } from "@angular/core";
+import { fetchTask, sendUpdate } from "./fake-server";
+import { decodeTask } from "./task-models";
+import type { DecodedTask, Task } from "./task-models";
+import { toTaskUpdate } from "./task-presentation";
+import type { CheckedDraft } from "./task-presentation";
+import { TaskEditor } from "./task-editor";
+import { TaskRow } from "./task-row";
 
 @Component({
   selector: "task-page",
   imports: [TaskRow, TaskEditor],
   template: `
-    <main class="mx-auto max-w-2xl space-y-6 px-4 py-8">
-      <h1 class="text-3xl font-semibold [overflow-wrap:anywhere]">One task, different models</h1>
-      <p class="text-muted">
-        In-memory simulation: no HTTP, backend, or persistence. Reload resets it.
-      </p>
+    <main>
+      <h1>One task, different models</h1>
       @if (task(); as accepted) {
-        <section aria-labelledby="accepted-heading" class="space-y-3">
-          <h2 id="accepted-heading" class="text-xl font-semibold">Accepted task</h2>
+        <section aria-labelledby="accepted-heading">
+          <h2 id="accepted-heading">Accepted task</h2>
           <task-row [task]="accepted" />
         </section>
-        <section aria-labelledby="editor-heading" class="space-y-3">
-          <h2 id="editor-heading" class="text-xl font-semibold">Edit draft</h2>
-          <task-editor [task]="accepted" [confirm]="confirm" />
+        <section aria-labelledby="editor-heading">
+          <h2 id="editor-heading">Edit draft</h2>
+          <task-editor [task]="accepted" [submitDraft]="submitDraft" />
         </section>
       } @else {
-        <p role="alert">Invalid initial response. No task was loaded.</p>
+        <p role="alert">The server's first response failed its checks, so no task was loaded.</p>
       }
     </main>
   `,
@@ -911,19 +1018,19 @@ export class TaskPage {
   readonly task = signal<Task | undefined>(undefined);
 
   constructor() {
-    const result = decodeTask(loadDemoTask());
+    const result = decodeTask(fetchTask());
 
-    if (result.kind === "confirmed") {
+    if (result.kind === "valid") {
       this.task.set(result.task);
     }
   }
 
-  readonly confirm = async (draft: CheckedDraft): Promise<Confirmation> => {
+  readonly submitDraft = async (draft: CheckedDraft): Promise<DecodedTask> => {
     const request = toTaskUpdate(draft);
-    const incoming = await simulateUpdate(request);
+    const incoming = await sendUpdate(request);
     const result = decodeTask(incoming);
 
-    if (result.kind === "confirmed") {
+    if (result.kind === "valid") {
       this.task.set(result.task);
     }
 
@@ -932,25 +1039,24 @@ export class TaskPage {
 }
 ```
 
-The page stores a confirmed `Task`, not a response DTO or formatted labels. Its `confirm` function maps checked edits to a request and validates/maps the response before replacing that task. Passing this function as an input gives the editor the concrete operation it needs; it does not introduce an API-service hierarchy.
+What to notice:
 
-The editor's linked signal receives the input function without eagerly reading the required input during construction. Its first rendered read initializes the draft after Angular supplies the task. For this one task, success explicitly replaces the draft with confirmed values; Discard copies the **current accepted task**, not the original fixture. A replacement with the same ID does not implicitly discard unfinished edits.
-
-The native form includes Enter submission from the title input. While waiting for the bounded simulation, text/date inputs are readonly and the checkbox, assignment select, and buttons are disabled. There is no competing writer, task switching, request-race policy, or network-failure simulation. Unexpected exceptions are not mislabeled as invalid responses; `finally` unlocks controls. A real HTTP workflow needs its own transport-failure handling.
-
-The date input handler preserves incomplete native entry instead of treating its empty string as a draft value. Submit snapshots the date control's current value, rejects `badInput` through the existing date error and focus path, and validates the snapshot before mapping it. Discard explicitly writes the restored date string to the native control: if that string already equals the draft, Angular's unchanged value binding would otherwise leave the partial entry in place. This is a deliberate control reset, not a second state owner. Correcting the entry supplies a usable value again; successful confirmation resets the draft to confirmed values as before.
-
-This is intentionally smaller than the forms article: it checks on submit and clears a field's old message when that field changes. It does not reproduce touched/dirty history or Signal Forms. Native labels name the controls; help/error IDs supply descriptions; `aria-invalid` reports a shown field failure. Visible status and post-render focus provide a correction/continuation path, without promising particular screen-reader speech.
+- The page stores a checked `Task`, not the JSON and not the labels. It's the only place that replaces the accepted task.
+- The first response goes through `decodeTask` in the constructor. If it's invalid, the page shows an error instead of a half-filled task.
+- `submitDraft` builds the request, sends it, checks the reply with the same `decodeTask`, and replaces the task only when the reply is valid. It's an arrow function so that `this` still means the page when the editor calls it.
+- There's one task and nothing else changing it, and the fake server never fails to answer. A real `HttpClient` call also needs handling for network errors.
 
 ### Save and run the client
 
-In an Angular 22.2.1 application with Zod 4.6.5 and the styling article's Tailwind 4 integration, save these five files beside one another:
+Create an Angular 22.2.1 app with `ng new`, install Zod with `npm install zod@4.6.5`, and save these files in `src/` next to each other:
 
 1. `task-models.ts`
 2. `task-presentation.ts`
-3. `demo-exchange.ts`
-4. `task-page.ts`
-5. `main.ts`, containing this bootstrap:
+3. `fake-server.ts`
+4. `task-row.ts`
+5. `task-editor.ts` and `task-editor.html`
+6. `task-page.ts`
+7. `main.ts`, replacing the generated one with this:
 
 ```ts
 import { bootstrapApplication } from "@angular/platform-browser";
@@ -959,49 +1065,45 @@ import { TaskPage } from "./task-page";
 bootstrapApplication(TaskPage);
 ```
 
-Replace the application's earlier bootstrap/host rather than bootstrap both examples. In its browser-parsed host document use `<task-page></task-page>`, not a self-closing host. Keep `data-theme="dark"` on `<html>`, the styling article's CSS entry, and `class="bg-page font-sans text-foreground"` on `<body>`. Angular templates can self-close the empty row/editor usages as shown.
+In `src/index.html`, replace the generated `<app-root></app-root>` with `<task-page></task-page>`. Then run `npx ng serve` and open the address it prints.
 
-Run that application's development command; in a standard Angular CLI workspace it is `npx ng serve`. This article does not supply a workspace, backend, or another Tailwind configuration. The two independent checks, `wire-check.ts` and `dates-check.ts`, do not belong in the app bootstrap. From the directory containing those two check files, with TypeScript 6.0.3 installed, run `npx tsc --ignoreConfig --strict --target ES2022 --module ES2022 --outDir checks wire-check.ts dates-check.ts`, then `node checks/wire-check.js` and `node checks/dates-check.js`. `--ignoreConfig` makes this an independent compilation rather than loading the Angular workspace's configuration.
+The two checks from earlier, `wire-check.ts` and `dates-check.ts`, aren't part of the app, so keep them outside `src/`.
 
-### Trace one actual edit
+### Trace one edit
 
 ```text
-Input events → editor draft changes; accepted row stays unchanged
-Submit       → validate draft → explicit update DTO
-             → simulate a normalized JSON response
-             → validate response → map to frontend Task
-             → page replaces accepted Task
-             → row recomputes labels; editor resets to confirmed values
+Typing        → editor draft changes; the row still shows the accepted task
+Save          → check the draft → build the update request
+              → fake server applies it and replies with JSON
+              → check the reply → map it to a frontend Task
+              → page replaces the accepted Task
+              → row recalculates its labels; editor resets to the confirmed values
 ```
 
-Try a title with spaces at its ends, a different due day, completion checked, and Clear assignment. Before Save, the accepted row must still describe the old task. After confirmation, it must show the trimmed title, chosen calendar day, completion, and “Unassigned.” The draft should contain those confirmed values and return its assignment action to Keep.
+Try a title with spaces at both ends, a different due date, Completed checked, and Clear assignment. Before you save, the row still describes the old task. After the save, it shows the trimmed title, the new day, "Completed" and "Unassigned", and the editor's assignment choice is back on Keep.
 
-Also check these boundaries:
+A few more things to try:
 
-- Open Creation details, edit, and save. Its expansion is row-only state and should survive replacement of the same task; it must never appear in a request.
-- Save an empty or whitespace-only title using Enter. Check the visible message, associated error, unchanged accepted data, and title focus. Try a date outside 2000–2099 too; date failure should focus that field.
-- Delete only the month of a filled date using Backspace, then Save. Check that no request runs, the accepted due date stays unchanged, the useful date error is associated with the control, and focus returns there. Correct the month and save; then try clearing **all** date parts and saving. Only the genuinely empty case should clear the accepted due date.
-- Discard after a successful save and further edits, including an incomplete date. Restore the latest accepted values, not the original sample. Also try incomplete entry when the accepted task has no due date: Discard must restore a genuinely empty control, not leave `badInput` behind.
-- Feed a missing, null, and assigned `assignee` through `decodeTask`. They must produce three different labels. Feed a bad status, February 30, or a zone-less instant: reject the response rather than invent data.
-- At the response boundary, test a malformed confirmation. Keep accepted data unchanged, retain the draft, and show the failure. Client-valid input alone is not acceptance.
-- Try long names/titles and literal text such as `<strong>Review</strong>`. Interpolation should display text, not create markup. Requests must contain only the explicit update fields, never display labels.
-- Use Tab, Shift+Tab, Space, and Enter. Check focus visibility and useful focus after invalid submission, confirmation, and Discard.
-- Check a true 320 CSS-pixel viewport in dark mode with a 16px root font and light mode with a 32px root font. Allow vertical scrolling; controls and long text must fit without horizontal page overflow.
-
-Strict TypeScript and Angular template compilation, schema/mapping contract checks, browser interactions, and narrow/larger-text inspection test different things. They do not establish screen-reader speech, browser zoom behavior, real-device usability, a working backend, or WCAG conformance.
+- Open Creation details, then edit and save. The details stay open, because that state belongs to the row, and it never appears in a request.
+- Save with a blank title, or with `2026-02-30` as the due date. You get a message and focus on the field, and the row doesn't change.
+- In `fake-server.ts`, change the last line of `sendUpdate` to `return { ...next, status: "waiting" };` and save. The editor says the reply failed its checks, the row keeps the old task, and your draft stays. The fake server did store the change, though, so a bad reply doesn't tell you the save failed; it tells you the page can't safely use what came back.
+- In `initialResponse`, remove the `assignee` property, then set it to `null`. The row shows "Assignment not included" and then "Unassigned".
 
 ## Closing check
 
-Can you trace this task through all five representations and explain why each exists?
+1. Why doesn't `http.get<TaskDto>(...)` protect you from `"status": "waiting"`?
+2. Why does the frontend keep three assignment cases instead of writing `dto.assignee?.display_name ?? "Unassigned"`?
+3. Why does the due date stay a string while `createdAt` becomes a `Date`?
+4. Why does the page run `decodeTask` on the reply to an update, when it built the request itself?
 
-- The stored foreign key represents a relationship; the backend application can work with a nested assignee concept.
-- The response DTO promises data for reading. JSON carries strings and records, not the backend's behavior or reconstructed dates.
-- Validation proves that incoming values fit the chosen contract. Mapping selects the frontend representation; neither replaces the other.
-- The frontend retains omitted versus unassigned, a completion boolean, a calendar string, and an explicitly interpreted creation instant.
-- The row derives localized labels. The editor holds unfinished values and an assignment-change choice. Neither shape is the accepted task or the read response.
-- The outgoing mapper constructs only deliberate update fields. A confirmed response passes through the same validation/mapping boundary before changing accepted data.
+Check your reasoning:
 
-**The database schema does not have to become the API contract, and the API contract does not have to become the frontend's internal model.** Shapes may coincide when their consumers need the same things. That is a choice—not an obligation, and not a reason to invent an abstraction for every arrow.
+1. The type argument is an assertion that exists only at compile time. `HttpClient` parses the JSON without checking it, so only runtime code such as a Zod schema can reject `"waiting"`.
+2. A missing `assignee` means the server didn't say, and `null` means nobody is assigned. The one-liner turns both into "Unassigned", which can be false.
+3. A due date is a calendar day, the same for everyone. Turning it into a `Date` picks a moment, and formatting that moment in another zone can show the wrong day. The creation time really is one moment, so a `Date` fits it.
+4. The reply is JSON from outside the program, and the server may have changed the data, for example by trimming the title. Only a checked reply should replace the accepted task.
+
+So which shape is the task? Each of them, for the code that reads it: the database row for storage, the response DTO for the trip to the frontend, the frontend `Task` for the app's logic, and the row view model and draft for the screen. **The database tables don't have to become the API response, and the API response doesn't have to become the frontend's model.** When two steps happen to need the same fields, sharing a shape is fine. Keep the checks and the mapping at the point where data enters the frontend, and each shape can change without dragging the others along.
 
 ## Sources and further reading
 
@@ -1015,5 +1117,4 @@ Can you trace this task through all five representations and explain why each ex
 - [MDN: JSON.parse](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse)
 - [MDN: Date, instants, and date-only parsing](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date)
 - [MDN: Intl.DateTimeFormat](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat)
-- [HTML Standard: date inputs, values, and bad input](<https://html.spec.whatwg.org/multipage/input.html#date-state-(type=date)>)
-- [MDN: ValidityState.badInput](https://developer.mozilla.org/en-US/docs/Web/API/ValidityState/badInput)
+- [Node.js: running TypeScript files](https://nodejs.org/api/typescript.html)
