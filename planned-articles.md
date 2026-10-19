@@ -2062,3 +2062,112 @@ All checked 2026-10-19.
 - Controllers DI, docs commit `bdf163830a286a0b8064e68367be018ad7e0e0f8`: https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/dependency-injection?view=aspnetcore-10.0
 - dotnet/runtime v10.0.13 (`6aa72daa24f66c01c3d7b6a32519e9d21396deec`): `HostingHostBuilderExtensions.cs` (validation equals `isDevelopment`), `CallSiteValidator.cs`, `ServiceProvider.cs`, `CallSiteRuntimeResolver.cs`, `ServiceProviderEngineScope.cs`.
 - dotnet/aspnetcore v10.0.13 (`0ef4bbfa3291b306a21e5001cb0491277bdd35bc`): `RequestServicesFeature.cs`, `UseMiddlewareExtensions.cs`, `EndpointFilterExtensions.cs`, `RequestDelegateFactory.cs`, `DefaultControllerActivator.cs`.
+
+## Agreed outline: async, await, and the thread pool
+
+Backend track, article 3. Agreed with loozo on 2026-10-19: "good to draft", which approves the outline with the recommended decisions (`.Result` in the opening and `Thread.Sleep` as the plain form, a dedicated monitor thread with `dotnet-counters` named once, the `LoadTest` console app, `ContinueWith` inline with the state machine collapsed, one sentence on the lock tension, thirteen sections) and authorizes the draft. Outline research by a helper agent against Microsoft Learn and dotnet/runtime and dotnet/aspnetcore source at v10.0.13, with measurements on .NET 10.
+
+**Draft status (2026-10-19):** Written in `src/content/blog/aspnet-core-async-and-the-thread-pool.md` with `draft: true` and left uncommitted. Commit, push, and publication are not authorized.
+
+**Publication status (2026-10-19):** loozo said "article 3 good to publish". Removed only the draft flag from the current file. Committed only the article as `282428e` (`Add async, await, and thread pool article`) and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (nine articles), and RSS return `200`, and its three article links are live.
+
+**Draft verification:** Every example was built and run with .NET SDK 10.0.402 (ASP.NET Core 10.0.13) in Debug and `Development`, as `dotnet run` does, on a 16-processor Linux laptop; projects, variants, scripts, and logs are in `/tmp/dump-aspnet-article/async`. Each load measurement used a freshly started server and the article's exact endpoint code, twice per variant: `await` 0.58 s on 17 threads with `/tasks/1` at 5 ms; `.Result` 2.7 to 2.8 s on 76 to 78 threads with `/tasks/1` at about 2 s; `GetAwaiter().GetResult()` 2.8 s on 77 to 78 threads; `Thread.Sleep` 6.1 s on 17 threads with `/tasks/1` at 5.4 s; `await Task.Run(Thread.Sleep)` 6.6 s on 17 threads. CPU work (about 30 ms of hashing) took 2.24 to 2.25 s called directly and 2.08 to 2.23 s through `Task.Run`, so the draft says `Task.Run` doesn't help rather than that it's slower; the research measurement of a small slowdown didn't reproduce. Also run: the `ContinueWith`, `await`, and hand-written state machine console demos; `/where` alone and with 30 concurrent requests; `CS1996` for `await` inside `lock`; `async void` crashing the process after `200`; a discarded task losing its exception silently; the awaited version returning `500` and staying up; cancellation logging `499` after two steps, and the version without a token running all ten steps and logging `200`; the dashboard at 1.0 s sequential and 0.5 s with `Task.WhenAll`. `.Wait()` was not measured separately with this code; the draft relies on the source showing it blocks through the same path as `.Result`. The explanation that `.Result` also delays its own wait, because the awaited method's continuation needs a pool thread, is stated as mechanism, not measured in isolation. Astro check reports no diagnostics, the production build excludes the draft, the development preview renders all thirteen internal anchors and three article links, and the thread pool diagram was checked visually in dark mode.
+
+**Working title:** Waiting without blocking: async, await, and the thread pool in ASP.NET Core.
+
+**Reader outcome:** Say what a thread does while handler code waits, recognize code that holds a thread while waiting, fix it by awaiting all the way down, pass the request's cancellation on, run independent waits at the same time, and explain why `Task.Run`, `async void`, and `.Result` don't belong in request handlers.
+
+**Running example:** The in-memory task board with `GET /tasks/summary` calling a client that waits 500 ms, `GET /tasks/report` (a slow loop taking a `CancellationToken`), `POST /tasks/{id}/complete` notifying watchers, a `LoadTest` console app (`HttpClient`, `Task.WhenAll`, latency summary), and a monitor thread printing the pool's thread count and queue length.
+
+**Prerequisites:** basic `async` and `await` syntax; the request pipeline article (`RequestAborted`, `CancellationToken` binding); the DI article (singletons shared by concurrent requests). The JavaScript runtimes article is optional.
+
+### Sections
+
+1. **Opening: one slow endpoint slows down every endpoint.** `.Result` under 200 concurrent requests: slow summaries, a growing pool, and a slow `/tasks/1`. One line changed to `await` fixes all three. Why did fewer threads serve faster?
+2. **Set up the example.** The one setup and versions note, single-machine numbers, restarting between measurements because the pool keeps threads for 20 s, and scope limits.
+3. **What a thread is, and what blocking costs.** `Thread.Sleep` holds a thread. Misconception: "a waiting thread costs nothing"; memory isn't what runs out, ready threads are. One paragraph for JavaScript readers.
+4. **The thread pool.** Pool threads run request code; fast injection up to the processor count, then slow. `Thread.Sleep` demo under load. Thread pool starvation defined. `SetMinThreads` in one sentence as hiding the cause.
+5. **Tasks and continuations.** A `Task` is an object for work that finishes later; `Task.Delay` uses a timer, not a thread. Misconception: "a Task is a thread." A hand-written `ContinueWith` continuation printing thread ids.
+6. **What await does.** The five steps; awaiting a completed task doesn't pause; a simplified state machine collapsed. Misconceptions: "await creates a thread", "async makes code faster or parallel."
+7. **Which thread continues after await.** Thread ids change under load. No `SynchronizationContext` in ASP.NET Core, so `ConfigureAwait(false)` changes nothing in app code and the classic deadlock becomes starvation. Shared-state recap linking the DI article; no `await` inside `lock`; one sentence on short locks without I/O.
+8. **Blocking on async code starves the pool.** Misconception: "`.Result` is fine if it's quick." `.Result`, `.Wait()`, and `GetResult()` block the same way. Measurement table. Async all the way down.
+9. **Task.Run doesn't free a thread.** `await Task.Run(blockingCall)` measured. I/O-bound versus CPU-bound; `Task.Run` adds overhead for CPU work in a server; why UI advice differs.
+10. **async void can crash the server.** The client gets `200`, then the process dies. A discarded task loses its exception. Fix: return a `Task` and await it.
+11. **Stopping work when the client leaves.** Cooperative cancellation; `curl --max-time` demo; status `499` in the log; the version without the token keeps working. Rules for passing tokens.
+12. **Running independent waits at the same time.** Sequential awaits versus `Task.WhenAll`. Safety: `HttpContext` isn't thread-safe; a unit of work can't run two operations at once. `LoadTest` has used the pattern all along.
+13. **Closing: back to the slow summary.** The answer, a four-item checklist, and a four-question quiz about threads during waits.
+
+### Boundaries
+
+Out of scope: background work after the response, parallel CPU work, UI synchronization contexts, custom awaitables and `ValueTask` beyond one sentence, `IAsyncEnumerable`, async locks beyond one sentence, diagnostic tools beyond one sentence, thread pool tuning, `ExecutionContext` and `AsyncLocal`, timeouts and linked tokens, EF Core, IIS. No mentions of unwritten articles.
+
+### Docs problems to follow the source or measurements on
+
+1. The async scenarios page ranks `.Result` and `.Wait()` as riskier than `GetAwaiter().GetResult()`; all three block through the same `InternalWait`.
+2. The async scenarios page says to move CPU work to `Task.Run` (UI advice); the best-practices page says not to call `Task.Run` and immediately await it in ASP.NET Core.
+3. The `Task.ConfigureAwait` remarks say the continuation usually runs on the creating thread; in ASP.NET Core it runs on any pool thread.
+4. Two pages say `ValueTask` needs a NuGet package; it's built into .NET 10.
+5. The best-practices samples for not sharing `HttpContext` across threads don't compile as shown.
+6. Not on Learn: ASP.NET Core has no `SynchronizationContext` (2019 ConfigureAwait FAQ and source), and aborted requests log status `499` (source).
+
+### Technical references for later drafting
+
+All checked 2026-10-19.
+
+- ASP.NET Core best practices, docs commit `cb8ebc40c6f1ad3729f05670528384e64899b347`: https://learn.microsoft.com/en-us/aspnet/core/fundamentals/best-practices?view=aspnetcore-10.0
+- Asynchronous programming overview, TAP model, and async scenarios, docs commit `156931bb4ec1e81b028c76ea983553f2e9778bdd`: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/
+- Async return types, docs commit `25c3f34f4c807ae3066783eb5a3a60b145ff0bad`: https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-return-types
+- Consuming TAP, docs commit `8b2033ff9f3b355e8fca60a4b0ee5e6501ab4fc7`: https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/consuming-the-task-based-asynchronous-pattern
+- The managed thread pool, docs commit `156931bb4ec1e81b028c76ea983553f2e9778bdd`: https://learn.microsoft.com/en-us/dotnet/standard/threading/the-managed-thread-pool
+- Threading runtime config, docs commit `028e3437c43bfb581b25dc2db98225ba93d87f64`: https://learn.microsoft.com/en-us/dotnet/core/runtime-config/threading
+- Debug thread pool starvation, docs commit `bf699c1dc311a6c1eed1ac8c08470af78675dd42`: https://learn.microsoft.com/en-us/dotnet/core/diagnostics/debug-threadpool-starvation
+- Cancellation in managed threads, docs commit `8b2033ff9f3b355e8fca60a4b0ee5e6501ab4fc7`: https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads
+- ConfigureAwait FAQ (Stephen Toub, .NET Blog): https://devblogs.microsoft.com/dotnet/configureawait-faq/
+- dotnet/runtime v10.0.13 (`6aa72daa24f66c01c3d7b6a32519e9d21396deec`): `PortableThreadPool.GateThread.cs`, `PortableThreadPool.Blocking.cs`, `PortableThreadPool.cs`, `Task.cs` (`InternalWait`).
+- dotnet/aspnetcore v10.0.13 (`0ef4bbfa3291b306a21e5001cb0491277bdd35bc`): `HttpProtocol.cs` (`499`), no `SetSynchronizationContext` outside Blazor.
+
+## Agreed outline: SQL, indexes, and parameters
+
+Backend track, article 4. Agreed with loozo on 2026-10-19: "Good to draft", which approves the outline with the recommended decisions (Docker `postgres:18.6-trixie` for readers, 1,000,000 tasks and 1,000 users, no N+1, inline SQL Server and MySQL notes, single-process plan first then the parallel default once, `$1` parameters, `integer` ids, the `union` leak run and the `delete` variant described only) and authorizes the draft. Outline research by a helper agent against the PostgreSQL 18 docs, Npgsql docs, Microsoft Learn, the MySQL 8.4 manual, and OWASP, with plans measured on a portable PostgreSQL 18.6 and Npgsql 10.0.3. The article links the async article, so that article must be published first or the link dropped.
+
+**Draft status (2026-10-19):** Written in `src/content/blog/sql-indexes-and-parameters.md` with `draft: true` and left uncommitted. Commit, push, and publication are not authorized. Publish the async article first, since this one links it.
+
+**Draft verification:** All SQL, plans, and timings come from the article's own `seed.sql` (`integer` ids, an `active` column on users) loaded into a fresh portable PostgreSQL 18.6 cluster (zonky binaries from the outline research) initialized with `en_US.UTF-8` and set to UTC like the Docker image; working files in `/tmp/dump-aspnet-article/sql`. Measured: the opening query at 55 ms single-process and 28 to 32 ms parallel over 10,205 pages, 0.87 ms with an `assignee_id` index, 0.08 ms and 119 buffers with `(assignee_id, due_on)`; lookup by id in 4 buffers with a three-level primary key index; skip scan with `Index Searches: 1002`; index-only scan; tiny-table and 80%-match sequential scans with the forced index slower; `created_at::date` at 64 to 69 ms against a range at 1.6 ms, and the IMMUTABLE error; newest 20 at 77 to 85 ms against 0.03 ms; search at 0.22 ms for a common term and 440 ms for a rare one; the stale-statistics estimate of 1,141 against 300,888; insert cost at about 0.2, 0.47, and 1.1 s; the foreign key check at 61 ms against 0.7 ms; both foreign key errors; join counts and the `Hash Join` rewrite. The Npgsql 10.0.3 minimal API ran the lookup, the concatenated search, the `union` leak returning 1,000 emails, the parameterized search returning `[]` with the value logged separately, `order by $2` not sorting, the allow-list `400`, `_` matching every title, and cancellation logging "canceling statement due to user request". Not run: the Docker commands themselves (the Docker daemon isn't running here), the destructive `delete` variant (verified by the outline research), and anything on SQL Server or MySQL (documentation only). Astro check reports no diagnostics, the production build excludes the draft, the development preview renders all fifteen internal anchors and five article links, and the B-tree diagram was checked visually in dark mode.
+
+**Working title:** Why listing one person's tasks reads every task: tables, indexes, and parameters in PostgreSQL.
+
+**Reader outcome:** Write the basic SQL behind the task board, explain what primary and foreign keys enforce and don't, predict how PostgreSQL finds rows with and without an index, read `EXPLAIN ANALYZE`, choose a two-column index order, and explain why parameters stop SQL injection when escaping doesn't.
+
+**Running example:** `users` (1,000 rows) and `tasks` (1,000,000 generated rows) in PostgreSQL; a minimal API using Npgsql with parameters and the request's `CancellationToken`. No EF Core, no Dapper.
+
+### Sections
+
+1. **Opening: the foreign key is there, so why is it slow?** "My open tasks" reads every page of a million-row table; one `create index` fixes it.
+2. **Set up the example.** One setup and versions note; PostgreSQL 18 required for these plans.
+3. **Tables, rows, and the first queries.** Types, `not null`, `null`, `is null`; `LIMIT` and `ILIKE` engine notes.
+4. **Primary keys, identity columns, and foreign keys.** Misconceptions: "a primary key is just a unique column", "foreign keys create indexes". Errors shown by running them. Engine notes.
+5. **Joins.** Inner versus left; a `where` on the right table turns a left join into an inner join, visible in the plan; fix by meaning.
+6. **How PostgreSQL stores rows, and the first plan.** Heap pages, sequential scan, single-process plan then parallel default. Clustered storage engine note.
+7. **How a B-tree index finds rows.** Diagram; lookup by id; bitmap scan on `assignee_id`.
+8. **Indexes with more than one column.** `(assignee_id, due_on)`, column order, skip scan misconception, index-only scans in one paragraph.
+9. **Reading a query plan.** Tree order, cost, estimated versus actual rows, loops, buffers, timing; `EXPLAIN ANALYZE` runs the statement; statistics and `analyze`.
+10. **When the planner doesn't use your index.** Tiny tables, low selectivity, functions on indexed columns (time zone and immutability), leading wildcards.
+11. **LIMIT and the cost of indexes.** Misconception: "LIMIT makes the query cheap." Write cost, size, and the foreign key delete payoff.
+12. **Queries from C#.** `AddNpgsqlDataSource`, `$1` parameters, `ExecuteReaderAsync` with the request's token, cancellation demo.
+13. **SQL injection and what parameters fix.** Concatenated search, the `union` leak, the `delete` variant described, Parse and Bind, escaping misconception, `order by $1` and allow-lists, `LIKE` wildcards in values.
+14. **Closing: back to the slow list.** Answer, checklist, four-question quiz.
+
+### Boundaries
+
+Out of scope: EF Core, Dapper, N+1 queries, transactions beyond `begin` and `rollback` for `EXPLAIN ANALYZE`, migrations and `create index concurrently`, many-to-many tables, index types other than B-tree beyond one `pg_trgm` sentence, partial and covering indexes, prepared statements and plan caching, batching and bulk loading, partitioning, tuning, `VACUUM` internals beyond one paragraph, and permissions beyond one sentence. No mentions of unwritten articles.
+
+### Docs problems to follow measurements on
+
+1. Npgsql's basic usage says parameterizing a column name fails; in `ORDER BY` it silently sorts by a constant.
+2. Microsoft's SQL injection page advises rejecting comment characters; follow OWASP (parameters plus allow-lists).
+3. "A composite index is useless without its first column" is contradicted by PostgreSQL 18 skip scan.
+4. A plain `VACUUM` after a small update may skip index cleanup and leave heap fetches; don't build a demo on it.
+
+### Technical references for later drafting
+
+All checked 2026-10-19: PostgreSQL 18 docs (release notes, constraints, identity columns, table expressions, page layout, indexes intro, types, multicolumn, ordering, expressions, index-only scans, using EXPLAIN, EXPLAIN, planner statistics, pattern matching, pg_trgm, protocol flow) at https://www.postgresql.org/docs/18/; Npgsql basic usage and prepared statements at https://www.npgsql.org/doc/; Microsoft Learn SQL Server pages on keys, clustered indexes, SQL injection, IDENTITY, ORDER BY, and actual execution plans (sql-server-ver17); MySQL 8.4 manual pages on foreign keys, InnoDB index types, string literals, range optimization, EXPLAIN, and AUTO_INCREMENT; the OWASP SQL Injection Prevention Cheat Sheet; the Docker official `postgres` image docs.
