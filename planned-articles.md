@@ -2173,3 +2173,54 @@ Out of scope: EF Core, Dapper, N+1 queries, transactions beyond `begin` and `rol
 ### Technical references for later drafting
 
 All checked 2026-10-19: PostgreSQL 18 docs (release notes, constraints, identity columns, table expressions, page layout, indexes intro, types, multicolumn, ordering, expressions, index-only scans, using EXPLAIN, EXPLAIN, planner statistics, pattern matching, pg_trgm, protocol flow) at https://www.postgresql.org/docs/18/; Npgsql basic usage and prepared statements at https://www.npgsql.org/doc/; Microsoft Learn SQL Server pages on keys, clustered indexes, SQL injection, IDENTITY, ORDER BY, and actual execution plans (sql-server-ver17); MySQL 8.4 manual pages on foreign keys, InnoDB index types, string literals, range optimization, EXPLAIN, and AUTO_INCREMENT; the OWASP SQL Injection Prevention Cheat Sheet; the Docker official `postgres` image docs.
+
+## Agreed outline: EF Core behind the scenes, and when to write SQL yourself
+
+Backend track, article 5. Agreed with loozo on 2026-10-19: "good to draft", which approves the outline with the recommended decisions (the `IEnumerable` helper opening, `EFCore.NamingConventions` shown after the `"Tasks"` error with one `HasColumnName` line, the manual loop for N+1 with lazy loading in one paragraph, one Dapper section without multi-mapping, the minimal API for behavior and a collapsed console program for measurements, a compact SQL log, `AddNpgsqlDataSource` with a parameterless `UseNpgsql()`, the `created_at` default gotcha, and one factual MySQL provider note rechecked when drafting) and authorizes the draft. Outline research by a helper agent against the EF Core 10 docs, the Npgsql EF Core provider docs and source, EFCore.NamingConventions, and Dapper source, with runs on PostgreSQL 18.6 using article 4's seed and index.
+
+**Draft status (2026-10-19):** Written in `src/content/blog/ef-core-behind-the-scenes.md` with `draft: true` and left uncommitted. Commit, push, and publication are not authorized.
+
+**Draft verification:** Every snippet ran with .NET SDK 10.0.402, Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 (EF Core 10.0.4), EFCore.NamingConventions 10.0.1, Npgsql.DependencyInjection 10.0.3, and Dapper 2.1.89 against a freshly reseeded copy of article 4's database with the `(assignee_id, due_on)` index; projects in `/tmp/dump-aspnet-article/ef` (`Lab` console in Release, `TaskBoard` web app in Development). Measured: the `IEnumerable` helper endpoint at 1.8 to 3 s against 2 to 23 ms, with about 970 MB allocated and 1,000,000 tracked in the console run; 100,000-row reads at about 240 ms and 99 MB tracked, 58 to 64 ms and 37 MB no-tracking, 54 to 63 ms and 35 MB projected; N+1 with 48 commands at 20 to 22 ms against one command at 6 to 10 ms; a singleton context failing 152 of 200 concurrent requests against 0 for scoped. Quoted output is real: the `"Tasks"` error, default command logs and Npgsql's `$1` log, sensitive data logging, client evaluation exceptions, `Contains` 0 against `ILike` 20, `DebugView`, the single-column `UPDATE`, the batched save with transaction logging, `-infinity` without the default, the identity map and `FindAsync` sending nothing, the detached no-tracking change, the second-operation exception, `FromSql` parameters, the `FromSqlRaw` injection, the EF1003 warning, `SqlQuery` naming error, `ExecuteUpdate` (178 rows) with the stale tracked entity, `ExecuteDelete`, Dapper's alias gotchas, and `MatchNamesWithUnderscores`. NuGet checked: Pomelo's latest is 9.0.0, Oracle's MySql.EntityFrameworkCore is at 10.0.9. Not rerun from the outline research: lazy-loading proxies, `AsSplitQuery`, `FromSqlRaw` with `{0}` arguments, and the analyzer missing a string built in a variable. Astro check reports no diagnostics, the production build excludes the draft, and the development preview renders all fourteen internal anchors and four article links.
+
+**Revision (2026-10-19):** At loozo's request, the "`ToList()` at the end" paragraph now shows three versions with the SQL each sends, measured warm on a freshly reseeded database: `ToListAsync` first (no `WHERE`, 1,000,000 tracked, 3.2 to 3.8 s), in the middle (`WHERE` only, 160 tracked full rows, about 5 ms for user 7), and last (`WHERE`, `ORDER BY`, `LIMIT`, three columns, nothing tracked). Astro check still reports no diagnostics.
+
+**Publication status (2026-10-19):** loozo said "article 5 good to publish". Removed only the draft flag. Committed only the article as `7b85121` (`Add EF Core behind the scenes article`) and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (eleven articles), and RSS return `200`, and its four article links are live.
+
+**Working title:** Why the same LINQ filter can read a million rows: what EF Core sends to PostgreSQL, and when to write SQL yourself.
+
+**Reader outcome:** Map existing tables to entities and read the SQL each query sends, tell whether a LINQ operator runs in the database or in memory, predict what `SaveChanges` sends, avoid N+1 queries, use no-tracking reads and projections, and choose `FromSql`, `SqlQuery`, `ExecuteUpdate` and `ExecuteDelete`, or Dapper without opening an injection hole.
+
+**Running example:** Article 4's `taskboard` database and `(assignee_id, due_on)` index; a minimal API with `TaskBoardDb : DbContext`, entities `User` and `TaskItem`, and response records.
+
+### Sections
+
+1. **Opening: a refactor that lost the WHERE.** An `IEnumerable<TaskItem>` helper parameter turns article 4's indexed query into a full table read.
+2. **Set up the example.** One versions note.
+3. **Mapping the existing tables.** Entities, navigations, `DbContext`, `DbSet`, conventions; the `"Tasks"` error and the snake_case convention; scoped registration; shared data source.
+4. **Seeing the SQL EF Core sends.** Default command logging, literals versus parameters, sensitive data logging, `ToQueryString`, Npgsql's `$1` log, what the logged time measures.
+5. **IQueryable and IEnumerable: where the filter runs.** Expression trees versus compiled delegates; the `AsEnumerable` and early `ToList` measurements; client evaluation rules; case-sensitive `Contains` and `ILike`.
+6. **Change tracking and what SaveChanges sends.** States, snapshots, `DebugView`, changed-columns-only updates, batching, `RETURNING`, transaction facts, the `created_at` default gotcha.
+7. **One instance per row: the identity map.** Same instance per row in a context; `FindAsync`.
+8. **Reads that don't need tracking.** `AsNoTracking` and projection measurements; what you give up; the projection sends article 4's query and uses its index.
+9. **One context per request, one operation at a time.** Two quoted facts; singleton failures under load; the second-operation exception.
+10. **Loading related data and the N+1 problem.** Null navigations; loop, lazy loading, `Include`, projection; split queries briefly.
+11. **Writing SQL yourself: FromSql and SqlQuery.** Interpolated parameters; `FromSqlRaw` concatenation injection; analyzer limits; `SqlQuery` naming and type rules.
+12. **Bulk changes: ExecuteUpdate and ExecuteDelete.** One statement, nothing tracked; stale tracked entities.
+13. **Dapper next to EF Core.** Shared data source, `CommandDefinition` with the token, the underscore mapping gotcha, when each tool fits.
+14. **Closing: back to the missing WHERE.** Answer, checklist, four-question quiz.
+
+### Boundaries
+
+Out of scope: transactions beyond stated facts, isolation, concurrency tokens, migrations and scaffolding, the comparison articles' topics and any repository debate beyond the quoted fact, context pooling, compiled queries, owned, complex, and JSON types, inheritance, query filters, interceptors, explicit loading beyond one sentence, stored procedures, bulk inserts, Dapper multi-mapping, NodaTime, connection resiliency. No mentions of unwritten articles.
+
+### Docs problems to follow runs or source on
+
+1. The DbContext configuration page quotes an older second-operation exception text.
+2. "All changes in a single call to SaveChanges are applied in a transaction": a single-statement save opens no explicit transaction (`AutoTransactionBehavior.WhenNeeded`).
+3. The raw SQL page doesn't say naming conventions apply to `SqlQuery` result types.
+4. Npgsql's docs don't document that a parameterless `UseNpgsql()` uses a DI-registered `NpgsqlDataSource` (`NpgsqlDataSourceManager.cs`, v10.0.3).
+5. Dapper's README documents neither `MatchNamesWithUnderscores` nor cancellation through `CommandDefinition`.
+
+### Technical references for later drafting
+
+All checked 2026-10-19: Microsoft Learn EF Core pages on DbContext (API and configuration), client evaluation, tracking, change tracking and detection, transactions, efficient updating and querying, ExecuteUpdate and ExecuteDelete, SQL queries, related data and lazy loading, split queries, logging, and what's new in EF Core 10 (https://learn.microsoft.com/en-us/ef/core/); Npgsql EF Core provider docs (https://www.npgsql.org/efcore/) and npgsql/efcore.pg v10.0.3; EFCore.NamingConventions README; Dapper 2.1.89 source. Packages: Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 (resolves EF Core 10.0.4), EFCore.NamingConventions 10.0.1, Dapper 2.1.89.
