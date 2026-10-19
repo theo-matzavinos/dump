@@ -2224,3 +2224,53 @@ Out of scope: transactions beyond stated facts, isolation, concurrency tokens, m
 ### Technical references for later drafting
 
 All checked 2026-10-19: Microsoft Learn EF Core pages on DbContext (API and configuration), client evaluation, tracking, change tracking and detection, transactions, efficient updating and querying, ExecuteUpdate and ExecuteDelete, SQL queries, related data and lazy loading, split queries, logging, and what's new in EF Core 10 (https://learn.microsoft.com/en-us/ef/core/); Npgsql EF Core provider docs (https://www.npgsql.org/efcore/) and npgsql/efcore.pg v10.0.3; EFCore.NamingConventions README; Dapper 2.1.89 source. Packages: Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 (resolves EF Core 10.0.4), EFCore.NamingConventions 10.0.1, Dapper 2.1.89.
+
+## Agreed outline: Transactions and concurrent edits
+
+Backend track, article 6. Agreed with loozo on 2026-10-19: "Good to draft", which approves the outline with the recommended decisions (the vanished-title opening, `PATCH /tasks/{id}` for edits and `POST /tasks/{id}/postpone` for the in-request demo without arguing endpoint design, an app-managed `version` column with one line each for `xmin` and `rowversion`, required `If-Match` with `428`, a strong quoted version ETag in the header, one-line problem bodies for `412` and `428`, a manual three-attempt `40001` retry, two-column timelines plus background `curl` requests for interleavings, a short Serializable section, thirteen sections) and authorizes the draft. Outline research by a helper agent against the PostgreSQL 18 docs and source, Npgsql docs and source, the EF Core docs, RFC 9110, RFC 6585, RFC 5789, the Fetch standard, SQL Server docs, and the MySQL 8.4 manual, with runs on PostgreSQL 18.6.
+
+**Working title:** Why a saved edit can vanish: transactions, isolation, and concurrent edits in PostgreSQL.
+
+**Reader outcome:** Make statements succeed or fail together from psql, Npgsql, and EF Core; predict what concurrent transactions see at each isolation level; spot a lost update and choose between an atomic update, a row lock, a retried Repeatable Read transaction, and a version check; send the version to the client as an ETag so a stale edit gets `412`.
+
+**Running example:** The EF Core article's task board plus `version integer not null default 1`; `GET /tasks/{id}` with an ETag, `PATCH /tasks/{id}`, `POST /tasks/{id}/postpone`, `POST /users/{id}/deactivate?moveTo=`.
+
+### Sections
+
+1. **Opening: a saved edit that disappears.** Two editors, two `204`s, Bob's stale title wins.
+2. **Set up the example.** One versions note; the `version` column; two psql windows.
+3. **A transaction: all of it or none of it.** Autocommit half-done deactivation; the same inside `begin`, aborted transaction, `commit` answering `ROLLBACK`.
+4. **Transactions from C#.** Npgsql transactions belong to one connection; rollback on dispose and on return to the pool; idle in transaction; EF Core `SaveChanges`, `ExecuteUpdate` without a transaction, `BeginTransactionAsync`.
+5. **What other transactions see.** MVCC; readers don't wait, writers wait for row locks; Read Committed versus Repeatable Read; SQL Server and MySQL defaults.
+6. **Lost updates inside one request.** Two postpones lose one; a transaction at Read Committed doesn't help.
+7. **Four ways to stop a lost update.** Atomic update, `select … for update`, Repeatable Read with a `40001` retry, a version check; table; engine notes.
+8. **Serializable, when the rule covers several rows.** Three-open-tasks rule; only Serializable catches it; retries for every transaction.
+9. **Keep transactions short.** Locked postpones with a slow call inside; `pg_stat_activity`; no external calls or user waits in a transaction.
+10. **Edits that span two requests.** Locking on open and `SaveChanges` misconceptions; optimistic concurrency with a version-checked `UPDATE`; `404` versus conflict.
+11. **Optimistic concurrency with EF Core.** `IsConcurrencyToken`, `DbUpdateConcurrencyException`, the C# check race, every write must bump the version; `xmin` and `rowversion` in one line each.
+12. **The version reaches the client as an ETag.** `If-Match`, `412`, `428`, strong comparison, CORS, what the client does on `412`.
+13. **Closing: back to the vanished title.** Answer, checklist, four-question quiz.
+
+### Boundaries
+
+Out of scope: migrations beyond one `alter table`, retries and idempotency in general, execution strategies, authentication, endpoint-style and code-organization comparisons, `TransactionScope`, savepoints beyond one EF log line, `NOWAIT` and `SKIP LOCKED` beyond one sentence, advisory locks, deadlock analysis, SSI and VACUUM internals, Read Uncommitted beyond one sentence, `If-None-Match` and `Last-Modified` on the API, automatic merging, triggers, runnable SQL Server or MySQL examples. No mentions of unwritten articles.
+
+### Docs problems to follow source or runs on
+
+1. Npgsql doesn't document rollback on transaction dispose or on returning a connection to the pool.
+2. Npgsql sends an explicit `READ COMMITTED` when no level is chosen.
+3. Npgsql's EF concurrency page describes 11.0 behavior; 10.0.3 wraps `40001` as `InvalidOperationException` around `DbUpdateException` around `PostgresException`.
+4. EF Core's concurrency page overgeneralizes Repeatable Read and doesn't show sending the token to a client.
+5. "current transaction is aborted" appears only in PostgreSQL's source; the docs list code 25P02.
+
+### Before drafting
+
+Check SQL Server's version-checked `UPDATE` under `READ_COMMITTED_SNAPSHOT` in the docs, and the CORS behavior for `ETag` and `If-Match` in a real browser.
+
+**Draft status (2026-10-19):** Written in `src/content/blog/transactions-and-concurrent-edits.md` with `draft: true` and left uncommitted. Commit, push, and publication are not authorized.
+
+**Draft verification:** Pre-draft checks done: SQL Server's locking and row versioning guide (docs commit `cf9e6fbc58f7b72c5f278a42796b74394ad059e4`) says updates under read committed, with or without `READ_COMMITTED_SNAPSHOT`, select rows from the latest committed data, so version-checked updates are safe there; headless Chromium against three CORS policies confirmed that without exposing `ETag` the script reads `null`, and without allowing `If-Match` the preflight blocks the `PATCH` (database unchanged). All runs on a freshly reseeded copy of the SQL article's database plus the `version` column (about 1 ms to add) on the research cluster; projects and outputs in `/tmp/dump-aspnet-article/tx`. Quoted output is real: the psql autocommit and transaction deactivations including "current transaction is aborted" and `ROLLBACK`; Npgsql and EF Core deactivations with and without transactions (rollback visible in PostgreSQL's log, `BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED`, `SAVEPOINT "__EFSavePoint"`); two-window timelines for nonblocking reads and waiting writers (2.6 s), Read Committed and Repeatable Read reads, the lost update, the atomic update (31 January), `for update` (2.9 s), Repeatable Read `40001`, the version-checked `UPDATE 0`, and Repeatable Read and Serializable three-task rule runs including different users conflicting; API runs of the opening without a concurrency token, postpone in naive, transaction, atomic, locked (2 s and 4 s), and Repeatable Read retry (attempt 2 at 4 s) modes, the exception chain without retry, Read Committed and Serializable rule endpoints (4 open against one `500`), three locked postpones finishing at 2, 4, and 6 s with `pg_stat_activity`; the ETag flow (`200` with `"1"`, `204` with `"2"`, `412` and `428` problem bodies, `204` with `"3"`), If-Match edge cases (weak `412`, list and `*` match, unquoted `428`), the two-request race with `DbUpdateConcurrencyException`, and the version-bump gotcha and its fix. From documentation only: MySQL and SQL Server engine notes, `xmin`, `rowversion`. Astro check reports no diagnostics, the production build excludes the draft, the development preview renders all fifteen internal anchors and eight article links, and the timeline tables were checked visually in dark mode.
+
+**Revision (2026-10-19):** loozo found the difference between Read Committed and Repeatable Read unclear. The isolation section now opens with the question isolation answers (does a later statement see what others committed after an earlier one), uses a count-then-list summary as the running case, and shows it in two timelines: Read Committed counted 160 and listed 159 rows after another session completed task 4869; Repeatable Read counted and listed 160. It adds a C# Repeatable Read snippet (verified: `{"openCount":160,"listed":160}`), explains why Read Committed is the default and what Repeatable Read costs when writing, and ends with a comparison table. The earlier due-date rereads were replaced. Astro check still reports no diagnostics.
+
+**Publication status (2026-10-19):** loozo said "Good to publish", noting that isolation is an advanced topic. Removed only the draft flag. Committed only the article as `11ffdac` (`Add transactions and concurrent edits article`) and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (twelve articles), and RSS return `200`, and its eight article links are live.
