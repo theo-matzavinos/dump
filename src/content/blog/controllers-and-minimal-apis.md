@@ -2,6 +2,7 @@
 title: "Same endpoints, two styles: controllers and minimal APIs in ASP.NET Core"
 description: "Build the task board's endpoints as a controller and as minimal API endpoints, and compare what actually differs: binding defaults, validation, error bodies, dependencies, testing, speed, and what each style is for."
 pubDate: "2026-10-19"
+updatedDate: "2026-10-20"
 tags:
   - aspnet-core
   - dotnet
@@ -139,7 +140,7 @@ public static class TaskEndpoints
         tasks.MapGet("/", List);
         tasks.MapGet("/{id:int}", Get);
         tasks.MapPost("/", Create);
-        tasks.MapPatch("/{id:int}", Edit);
+        tasks.MapPut("/{id:int}", Edit);
         tasks.MapPost("/{id:int}/complete", Complete);
     }
 
@@ -222,7 +223,7 @@ public class TasksController(TaskBoardDb db) : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = task.Id }, new TaskDetails(task.Id, task.Title, task.Done, task.DueOn, task.Version));
     }
 
-    [HttpPatch("{id:int}")]
+    [HttpPut("{id:int}")]
     public async Task<IActionResult> Edit(int id, TaskEdit edit, CancellationToken cancellationToken)
     {
         var ifMatch = Request.GetTypedHeaders().IfMatch;
@@ -295,7 +296,7 @@ public static class TaskEndpoints
         tasks.MapGet("/", List);
         tasks.MapGet("/{id:int}", Get);
         tasks.MapPost("/", Create);
-        tasks.MapPatch("/{id:int}", Edit);
+        tasks.MapPut("/{id:int}", Edit);
         tasks.MapPost("/{id:int}/complete", Complete);
     }
 
@@ -440,7 +441,7 @@ A record parameter defaults to the request body, and `GET` requests don't have o
 
 **A missing required `string`.** For `string title` with no value, both reject the request with `400`. The minimal response is empty; the controller's is a JSON body naming the field.
 
-**A `PATCH` with no body at all.** The minimal endpoint answers `400`, the controller `415`.
+**A `PUT` with no body at all.** The minimal endpoint answers `400`, the controller `415`.
 
 None of these is wrong. They're different defaults, and moving an endpoint from one style to the other changes them.
 

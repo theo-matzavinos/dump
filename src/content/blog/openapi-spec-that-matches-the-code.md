@@ -2,6 +2,7 @@
 title: "The spec says 200, the endpoint sends 204: an OpenAPI document that matches your ASP.NET Core code"
 description: "Find where ASP.NET Core's generated OpenAPI document and your endpoints disagree, declare the responses your code, middleware, and framework send in both controllers and minimal APIs, and make every API change show up in code review."
 pubDate: "2026-10-19"
+updatedDate: "2026-10-20"
 tags:
   - aspnet-core
   - openapi
@@ -11,7 +12,7 @@ audience:
   - backend
 ---
 
-Here's what the task board's OpenAPI document says the controller version's `PATCH /tasks/{id}` can answer:
+Here's what the task board's OpenAPI document says the controller version's `PUT /tasks/{id}` can answer:
 
 ```json
 "responses": {
@@ -34,7 +35,7 @@ The endpoint never sends `200`, and the document mentions none of the four respo
 
 ASP.NET Core generated that document from the code. So where did the `200` come from, and where did the other four go? This article finds out, for both the controller and the minimal API versions of the task board, and then shows how to declare what each endpoint really sends and how to catch the next mismatch in code review.
 
-You'll need [Controllers and minimal APIs compared](/dump/blog/controllers-and-minimal-apis/), whose two versions of the API this article uses unchanged, including their `TypedResults` and problem details setup. [The transactions article](/dump/blog/transactions-and-concurrent-edits/) explains why `PATCH` answers `412` and `428`, and [From bytes to your handler](/dump/blog/aspnet-core-request-pipeline/) explains the `400` and `415` responses that come from binding and routing. [gRPC for frontend developers](/dump/blog/grpc-onboarding/) shows what an OpenAPI document looks like and what a client generated from one does. You should be able to read a `git diff`.
+You'll need [Controllers and minimal APIs compared](/dump/blog/controllers-and-minimal-apis/), whose two versions of the API this article uses unchanged, including their `TypedResults` and problem details setup. [The transactions article](/dump/blog/transactions-and-concurrent-edits/) explains why `PUT` answers `412` and `428`, and [From bytes to your handler](/dump/blog/aspnet-core-request-pipeline/) explains the `400` and `415` responses that come from binding and routing. [gRPC for frontend developers](/dump/blog/grpc-onboarding/) shows what an OpenAPI document looks like and what a client generated from one does. You should be able to read a `git diff`.
 
 ## Contents
 
@@ -106,7 +107,7 @@ Here's what each version's generated document lists, next to what both versions 
 | `GET /tasks` | 200 | 200 | 200; the minimal version also sends 400 without `assigneeId` |
 | `GET /tasks/{id}` | 200, 404 (no body) | 200 | 200, 404 with a problem body |
 | `POST /tasks` | 201 | 200 | 201, 400 from validation, 415 |
-| `PATCH /tasks/{id}` | 204, 404 | 200 | 204, 404, 412, 428 |
+| `PUT /tasks/{id}` | 204, 404 | 200 | 204, 404, 412, 428 |
 | `POST /tasks/{id}/complete` | 204, 404 | 200 | 204, 404 |
 
 What to notice:
@@ -125,7 +126,7 @@ A related belief is that returning `IResult` documents itself. The untyped `Resu
 The oldest fix is to declare the responses next to the handler. In a controller, that's `[ProducesResponseType]`:
 
 ```csharp
-[HttpPatch("{id:int}")]
+[HttpPut("{id:int}")]
 [ProducesResponseType(StatusCodes.Status204NoContent)]
 [ProducesResponseType(StatusCodes.Status404NotFound)]
 [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
@@ -136,13 +137,13 @@ public async Task<IActionResult> Edit(int id, TaskEdit edit, CancellationToken c
 On a minimal endpoint, it's a set of extension methods on the `Map…` call:
 
 ```csharp
-tasks.MapPatch("/{id:int}", Edit)
+tasks.MapPut("/{id:int}", Edit)
     .ProducesProblem(StatusCodes.Status404NotFound)
     .ProducesProblem(StatusCodes.Status412PreconditionFailed)
     .ProducesProblem(StatusCodes.Status428PreconditionRequired);
 ```
 
-`ProducesProblem` declares a problem details response with the `application/problem+json` content type; `Produces<T>(status)` declares any other. With these, both documents list `204`, `404`, `412`, and `428` for `PATCH`.
+`ProducesProblem` declares a problem details response with the `application/problem+json` content type; `Produces<T>(status)` declares any other. With these, both documents list `204`, `404`, `412`, and `428` for `PUT`.
 
 Many developers expect the compiler to check those declarations against the code. It doesn't, and Microsoft's documentation says so: "By default, there are no compile-time checks to ensure that the response metadata specified with a `[ProducesResponseType]` attribute is consistent with the actual behavior of the action method." The minimal API methods are the same: they "only set the response metadata for the endpoint."
 

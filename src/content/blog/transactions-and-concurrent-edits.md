@@ -2,6 +2,7 @@
 title: "Why a saved edit can vanish: transactions, isolation, and concurrent edits in PostgreSQL"
 description: "Make database changes all-or-nothing, see what concurrent transactions can see, stop lost updates with atomic updates, row locks, or retries, and turn a stale edit into 412 Precondition Failed with a version column and ETags."
 pubDate: "2026-10-19"
+updatedDate: "2026-10-20"
 tags:
   - postgresql
   - ef-core
@@ -478,7 +479,7 @@ So inside a transaction, do only database work. Call other services, send emails
 
 Back to Alice and Bob. Their edit isn't a read and a write inside one request: Bob's request loaded the task when he opened the editor, and his save is a separate request, possibly minutes later. That rules out the earlier fixes.
 
-You might think the editor could lock the row when it opens. But a `GET` and a `PATCH` are separate requests, with separate connections and transactions, and the previous section showed why a transaction must never wait for a person to finish typing. Others assume EF Core already protects against this, since `SaveChanges` only sends changed columns. It does compare, but with the row as it is now: Bob's stale title differs from Alice's new title, so it counts as a change and gets sent.
+You might think the editor could lock the row when it opens. But a `GET` and a `PUT` are separate requests, with separate connections and transactions, and the previous section showed why a transaction must never wait for a person to finish typing. Others assume EF Core already protects against this, since `SaveChanges` only sends changed columns. It does compare, but with the row as it is now: Bob's stale title differs from Alice's new title, so it counts as a change and gets sent.
 
 What's needed is a way to tell, at save time, that the data Bob's edit was based on has changed since he loaded it. That's what the `version` column is for. Every write increases it, and every edit says which version it started from:
 
@@ -578,10 +579,10 @@ app.MapGet("/tasks/{id:int}", async (int id, TaskBoardDb db, HttpContext context
 
 An ETag is written in double quotes, so version 3 becomes `"3"`. The version is also in the JSON body here, which is harmless; the header is what HTTP uses.
 
-The `PATCH` endpoint requires `If-Match`, checks it, and lets the concurrency token catch anything that happens after the check:
+The `PUT` endpoint requires `If-Match`, checks it, and lets the concurrency token catch anything that happens after the check:
 
 ```csharp
-app.MapPatch("/tasks/{id:int}", async (int id, TaskEdit edit, HttpContext context, TaskBoardDb db, CancellationToken cancellationToken) =>
+app.MapPut("/tasks/{id:int}", async (int id, TaskEdit edit, HttpContext context, TaskBoardDb db, CancellationToken cancellationToken) =>
 {
     var ifMatch = context.Request.GetTypedHeaders().IfMatch;
     if (ifMatch.Count == 0)
@@ -654,7 +655,7 @@ ETag: "1"
 Alice saves with `If-Match: "1"`:
 
 ```bash
-curl -i -X PATCH -H 'Content-Type: application/json' -H 'If-Match: "1"' \
+curl -i -X PUT -H 'Content-Type: application/json' -H 'If-Match: "1"' \
   -d '{"title":"Write the API reference","dueOn":"2027-01-17"}' http://localhost:5000/tasks/41
 ```
 
@@ -695,12 +696,12 @@ A few details of `If-Match` that the endpoint handles through `Matches`:
 
 ### From the browser
 
-If the editor runs on another origin, CORS applies, as [HTTP from TCP to fetch](/dump/blog/http-from-tcp-to-fetch/) explains. Two parts of the policy matter here. `ETag` isn't one of the response headers a script may read by default, so the API has to expose it; without that, `response.headers.get("ETag")` returns `null` in the browser. And `If-Match` isn't one of the request headers allowed without asking, so a `PATCH` carrying it triggers a preflight that must allow it; without that, the browser never sends the `PATCH`. In ASP.NET Core:
+If the editor runs on another origin, CORS applies, as [HTTP from TCP to fetch](/dump/blog/http-from-tcp-to-fetch/) explains. Two parts of the policy matter here. `ETag` isn't one of the response headers a script may read by default, so the API has to expose it; without that, `response.headers.get("ETag")` returns `null` in the browser. And `If-Match` isn't one of the request headers allowed without asking, so a `PUT` carrying it triggers a preflight that must allow it; without that, the browser never sends the `PUT`. In ASP.NET Core:
 
 ```csharp
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
     policy.WithOrigins("http://localhost:4200")
-        .WithMethods("GET", "PATCH")
+        .WithMethods("GET", "PUT")
         .WithHeaders("Content-Type", "If-Match")
         .WithExposedHeaders("ETag")));
 ```
@@ -725,7 +726,7 @@ Alice's title vanished because Bob's save was built on data that was already out
 
 1. **Two requests each load task 41 at Read Committed, add seven days to its due date, and save, at the same time. What's the final date, and why?** One week later, not two. Both read the same date, and reading doesn't lock at Read Committed, so the second write replaces the first: a lost update.
 2. **Which of these fixes needs a retry loop: an atomic `UPDATE`, `select … for update`, Repeatable Read, Serializable?** Repeatable Read and Serializable. They detect the conflict by failing a transaction with `40001`. The other two make the second transaction wait instead.
-3. **Why can't a row lock taken while handling the `GET` protect the `PATCH` that comes later?** The lock belongs to a transaction, and the `GET`'s transaction ends with its request. Holding it open until the person saves would keep a connection and a lock for minutes and block everyone else.
+3. **Why can't a row lock taken while handling the `GET` protect the `PUT` that comes later?** The lock belongs to a transaction, and the `GET`'s transaction ends with its request. Holding it open until the person saves would keep a connection and a lock for minutes and block everyone else.
 4. **A client sends `If-Match: "4"`, and the task is at version 5. What should the server do, and what should the client do?** The server answers `412 Precondition Failed` without saving. The client keeps the person's draft, reloads the task, shows what changed, and lets them apply their edit again.
 
 ## Sources and further reading
