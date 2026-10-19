@@ -2274,3 +2274,49 @@ Check SQL Server's version-checked `UPDATE` under `READ_COMMITTED_SNAPSHOT` in t
 **Revision (2026-10-19):** loozo found the difference between Read Committed and Repeatable Read unclear. The isolation section now opens with the question isolation answers (does a later statement see what others committed after an earlier one), uses a count-then-list summary as the running case, and shows it in two timelines: Read Committed counted 160 and listed 159 rows after another session completed task 4869; Repeatable Read counted and listed 160. It adds a C# Repeatable Read snippet (verified: `{"openCount":160,"listed":160}`), explains why Read Committed is the default and what Repeatable Read costs when writing, and ends with a comparison table. The earlier due-date rereads were replaced. Astro check still reports no diagnostics.
 
 **Publication status (2026-10-19):** loozo said "Good to publish", noting that isolation is an advanced topic. Removed only the draft flag. Committed only the article as `11ffdac` (`Add transactions and concurrent edits article`) and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (twelve articles), and RSS return `200`, and its eight article links are live.
+
+## Agreed outline: Controllers and minimal APIs compared
+
+Backend track, article 7, the first comparison article. Agreed with loozo on 2026-10-19: "Good to draft", which approves the outline with the recommended decisions (the missing-`assigneeId` opening with the `404` body difference as a second beat, all five endpoints built both ways in small slices with full files collapsed, named static handlers in `TaskEndpoints` with one sentence on why, `TypedResults` in this article only, the compact measurement table framed as real but small next to a database round trip, DataAnnotations in both with the missing `AddProblemDetails()` gotcha, two-line authorization, a short Native AOT subsection, both behaviors per criterion, misconceptions in both directions, Microsoft's lists quoted for both, and no verdict) and authorizes the draft. Outline research by a helper agent against aspnetcore-10.0 docs and dotnet/aspnetcore v10.0.13 source, with runs on PostgreSQL 18.6.
+
+**Working title:** Same endpoints, two styles: controllers and minimal APIs in ASP.NET Core.
+
+**Reader outcome:** Write the same endpoints both ways; predict where binding defaults, validation setup, error bodies, dependency creation, and unit-test setup differ; quote Microsoft's recommendation and its reasons; know what the measured speed difference is worth; run both in one app; tell when each fits.
+
+**Running example:** The transactions article's task board built twice, as `TasksController` and as a `TaskEndpoints` class with named static handlers in `MapGroup("/tasks")`, sharing model files: a filtered list, `GET /tasks/{id}` with an ETag, validated `POST /tasks`, `PATCH /tasks/{id}` with `If-Match`, and `POST /tasks/{id}/complete`.
+
+### Sections
+
+1. **Opening: the same request gets two answers.** Missing `assigneeId`: empty `400` against `200 []`; empty `404` against a problem `404`.
+2. **Set up the example.** One versions note; two projects sharing model files; `Production`.
+3. **What Microsoft recommends.** Quoted recommendation, reasons, and both lists; template defaults.
+4. **Routes, and where the code lives.** Attribute routes against `MapGroup`; misconception "everything in Program.cs"; extension method; same size and same files per change.
+5. **How dependencies arrive.** Constructor injection creates unused services, even on `415`; per-handler parameters; `[FromServices]`.
+6. **Binding: the same signature, different rules.** Missing `int`; record on `GET`; `PATCH` without body; missing `string`.
+7. **Validation.** `[ApiController]` against `AddValidation()`; plain JSON without `AddProblemDetails()`; route, query, header validation; misconception "minimal APIs can't validate".
+8. **Results and error bodies.** `ActionResult<T>` against `Results<…>`; problem details defaults; `Location` headers; `TypedResults` in controllers; one OpenAPI sentence.
+9. **Filters and authorization, one example.** Attributes against group methods; same `401` and header.
+10. **Testing.** Identical integration tests; static handler unit test; controller `NullReferenceException` without `ControllerContext`.
+11. **Speed, startup, memory, and Native AOT.** Misconceptions in both directions; measurement table; AOT support and EF Core's experimental status.
+12. **Both styles in one app.** Coexistence; ambiguous route; moving one endpoint factually.
+13. **When each fits.** Quoted, factual lists for both; no verdict.
+14. **Closing: back to the two answers.** Different defaults; checklist table; four-question quiz.
+
+### Boundaries
+
+Out of scope: endpoint design, code organization across layers, OpenAPI accuracy beyond one sentence, authentication setup, FluentValidation, OData, custom binders, and application parts beyond naming them, Razor Pages and views, Native AOT walkthroughs, benchmarking methodology beyond one note, migration strategy. No mentions of unwritten articles.
+
+### Docs problems to follow runs or source on
+
+1. The APIs overview gives no evidence for "better performance" and "easier testing".
+2. Minimal validation docs omit route values, which are validated.
+3. Without `AddProblemDetails()`, the minimal validation `400` is `application/json` without `type` or `status` (`ValidationEndpointFilterFactory.cs`, v10.0.13).
+4. The web API page's sample bodies show old RFC 7231 links and trace id formats.
+5. The Native AOT page doesn't say that controller apps publish with warnings and then find no actions.
+6. The APIs overview recommends controllers for large applications while saying minimal APIs scale; quote both.
+
+**Draft status (2026-10-19):** Written in `src/content/blog/controllers-and-minimal-apis.md` with `draft: true` and left uncommitted. Commit, push, and publication are not authorized.
+
+**Draft verification:** The article's code is the outline research's `Minimal`, `Controllers`, `Gotchas`, and test projects in `/tmp/dump-controllers-research`, rerun on its PostgreSQL 18.6 cluster in `Production`. Rerun and quoted: the opening (`400` empty against `200 []`; empty `404` against a problem `404`), `PATCH` without a body (`400` against `415`), validation bodies with and without `AddProblemDetails()` and `UseStatusCodePages()`, `Location` headers, `[BindRequired]` (new check, problem `400`), the record-on-`GET` startup error and `415`, missing `string`, unused constructor dependency created for every controller request (the outline's "even on `415`" didn't apply to this endpoint and was dropped), empty `404` from `TypedResults` in a controller, XML only from the controller, `401` and `no-store` in both, `AmbiguousMatchException`, both test suites (integration tests pass in both; the controller unit test without `ControllerContext` fails with `NullReferenceException`). Measurements are the research's raw load-test and startup logs (`out/load-ping.txt`, `out/load-task2.txt`, `out/load-task-c4.txt`, `out/startup.txt`), not rerun; the gap at full EF Core load is stated as 10 to 15%. Native AOT figures come from the research's publish and run logs. Astro check reports no diagnostics, the production build excludes the draft, and the development preview renders all fourteen internal anchors and three article links.
+
+**Publication status (2026-10-19):** loozo said "Good to publish". Removed only the draft flag. Committed only the article and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (thirteen articles), and RSS return `200`, and its three article links are live.
