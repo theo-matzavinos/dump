@@ -15,7 +15,7 @@ You send `GET /tasks/abc` to the task board's API and get back `400 Bad Request`
 
 Something answered both requests, and it wasn't your handler. Between the moment bytes arrive on the server and the moment your handler runs, ASP.NET Core passes each request through several steps. Any of them can send the response itself and stop there. This article walks through those steps in the order a request meets them, so that when you see a status code, you can say which step sent it.
 
-You'll need to read C# lambdas such as `x => x + 1` and know that a `Func<A, B>` is a function that takes an `A` and returns a `B`. You'll also need basic `async` and `await`: you'll see `await next(context)` a lot. You don't need to know what happens during an `await` to follow along. HTTP requests, responses, methods and status codes are explained in [HTTP from TCP to fetch](/dump/blog/http-from-tcp-to-fetch/). Authentication, how services are created, and the format of error responses are outside this article's scope.
+You'll need to read C# lambdas such as `x => x + 1` and know that a `Func<A, B>` is a function that takes an `A` and returns a `B`. You'll also need basic `async` and `await`: you'll see `await next(context)` a lot. You don't need to know what happens during an `await` to follow along. HTTP requests, responses, methods and status codes are explained in [HTTP from TCP to fetch](/dump/blog/http-from-tcp-to-fetch/). How the app creates and shares services is the subject of [Who creates your services](/dump/blog/aspnet-core-dependency-injection/). Authentication and the format of error responses are outside this article's scope.
 
 ## Contents
 
