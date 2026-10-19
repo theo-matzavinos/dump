@@ -2320,3 +2320,49 @@ Out of scope: endpoint design, code organization across layers, OpenAPI accuracy
 **Draft verification:** The article's code is the outline research's `Minimal`, `Controllers`, `Gotchas`, and test projects in `/tmp/dump-controllers-research`, rerun on its PostgreSQL 18.6 cluster in `Production`. Rerun and quoted: the opening (`400` empty against `200 []`; empty `404` against a problem `404`), `PATCH` without a body (`400` against `415`), validation bodies with and without `AddProblemDetails()` and `UseStatusCodePages()`, `Location` headers, `[BindRequired]` (new check, problem `400`), the record-on-`GET` startup error and `415`, missing `string`, unused constructor dependency created for every controller request (the outline's "even on `415`" didn't apply to this endpoint and was dropped), empty `404` from `TypedResults` in a controller, XML only from the controller, `401` and `no-store` in both, `AmbiguousMatchException`, both test suites (integration tests pass in both; the controller unit test without `ControllerContext` fails with `NullReferenceException`). Measurements are the research's raw load-test and startup logs (`out/load-ping.txt`, `out/load-task2.txt`, `out/load-task-c4.txt`, `out/startup.txt`), not rerun; the gap at full EF Core load is stated as 10 to 15%. Native AOT figures come from the research's publish and run logs. Astro check reports no diagnostics, the production build excludes the draft, and the development preview renders all fourteen internal anchors and three article links.
 
 **Publication status (2026-10-19):** loozo said "Good to publish". Removed only the draft flag. Committed only the article and pushed to `origin/main`; GitHub Pages run succeeded. Live checks: the article, `/backend/` (thirteen articles), and RSS return `200`, and its three article links are live.
+
+## Agreed outline: An OpenAPI spec that matches the code
+
+Backend track, article 8, the second comparison article. Agreed with loozo on 2026-10-19: "Good to draft", which approves the outline with the recommended decisions (`responses` excerpts plus a table and real diffs, one `401` operation transformer, the CI `git diff --exit-code` check, one docs UI sentence, every fix in both styles with typed results available to both in .NET 10 and attributes kept as a valid controller path with their review blind spot stated, the `init`-property record only in the request-schema section, two-line authorization, an explicit `500` problem response with `default` in one sentence, the typed controller's empty `404` stated as a tradeoff, and the section 11 contrast framed as attributes against typed results rather than controllers against minimal APIs) and authorizes the draft. Outline research by a helper agent against aspnetcore-10.0 docs and dotnet/aspnetcore v10.0.13 source, with runs on .NET SDK 10.0.402.
+
+**Working title:** The spec says 200, the endpoint sends 204: an OpenAPI document that matches your ASP.NET Core code.
+
+**Reader outcome:** Predict what ASP.NET Core writes into an OpenAPI document for each style and why; find where document and code disagree; declare the responses code, middleware, and framework send; know what attributes, analyzers, conventions, typed results, and transformers guarantee; generate the document at build time so API changes show up in review.
+
+**Running example:** The previous article's two copies of the task board API plus `Microsoft.AspNetCore.OpenApi`, `AddOpenApi()`, and `MapOpenApi()`.
+
+### Sections
+
+1. **Opening: the spec says 200, the endpoint sends 204.** Controller `PATCH` documents only `200`; real `204`, `404`, `412`, `428`.
+2. **Set up the example.** Versions; OpenAPI 3.1.1; the template's Development-only `if`; integer schema noise explained once.
+3. **What the document is for, and where its response list comes from.** Misconception "generated, so always right"; API explorer mechanism; default `200`.
+4. **The task board's document, endpoint by endpoint.** Table of documented against sent; misconception "returning `IResult` documents itself"; `ProblemHttpResult` carries no status.
+5. **Declaring responses by hand.** Attributes and `Produces…`; no compile-time checks; drift demo; declaring any response removes the inferred `200`; content types.
+6. **API analyzers and conventions for controllers.** What `API1000` flags and misses; `ASPDEPR007`; conventions and parameter counts.
+7. **Typed results describe themselves, in both styles.** .NET 10 controller support; limits for `412` and `428`; the typed controller's empty `404`.
+8. **Responses your handler never sends.** Binding and validation `400`, status-code-pages `404` body, routing `415`, `401`, unhandled `500`; no `Produces` on groups.
+9. **One transformer for responses that follow from metadata.** The `401` operation transformer; `WithOpenApi()` deprecated.
+10. **Request schemas can drift too.** Positional record attributes missing from the document; `init`-property record works.
+11. **Generate the document at build time and review the diff.** `Microsoft.Extensions.ApiDescription.Server`, `OpenApiDocumentsDirectory`, the build runs `Program.cs`, captured diffs, CI check, tools named, docs UI misconception.
+12. **Closing: back to the 200.** Answer, checklist table, four-question quiz.
+
+### Boundaries
+
+Out of scope: security schemes, XML comments, schema and document transformers, versioned documents and YAML, client generation, docs UI setup, breaking-change tooling beyond naming it, Swashbuckle and NSwag, spec-first design. No verdict between styles. No mentions of unwritten articles.
+
+### Docs problems to follow runs or source on
+
+1. `Produces(...)` isn't available on `RouteGroupBuilder` (CS1929).
+2. Pages disagree about typed results in controllers; they work since .NET 10 (PR #60096).
+3. `MapOpenApi()` isn't restricted to Development; the template's `if` is.
+4. The build-time document path is described inconsistently; observed `obj/<project>.json` without the property.
+5. The `ASPDEPR007` help link redirects to a search engine.
+6. `[ProducesDefault]` doesn't exist; `[ProducesDefaultResponseType]` does.
+7. The authorization transformer sample uses the Microsoft.OpenApi 1.x API.
+8. "Only IEndpointMetadataProvider return types create a responses entry" is imprecise.
+9. No page says declaring any response suppresses the inferred `200`.
+10. The analyzers page doesn't say `API1000` can't see status codes passed as arguments.
+
+**Publication status (2026-10-19):** loozo approved publication ("Good to publish"). Published in commit `1ff9e03` with the draft flag removed. Astro check reports no diagnostics, the GitHub Pages run succeeded, and the live page, the backend index (14 articles), the RSS feed, all twelve internal anchors, and five article links return or resolve correctly.
+
+**Draft verification:** Regenerated every main document with build-time generation in copies under `/tmp/dump-aspnet-article/openapi`: the base minimal and controller documents (the endpoint table), the minimal version with `Produces…` calls, the controller with attributes, and the typed controller (identical to the minimal document). Rerun: the attribute drift (document unchanged, `git diff --stat` shows only `TasksController.cs`), the typed minimal and typed controller changes (both show `openapi/TaskBoard.json` in the diff with `204` becoming `200` and a `TaskSummary` schema), `git diff --exit-code` exiting `1`, the API analyzers (`API1000` for `201`, `204`, `404`, nothing for `412` and `428`, plus `ASPDEPR007`), `ActionResult<T>` with only a `404` attribute documenting only `404`, the `401` transformer in both styles, the `init`-property `NewTask` (`required: ["title"]`, `maxLength: 200`, validation `400` in both, different errors for a missing title), and the minimal routing `415` problem body. From the outline research's captured runs: the real `PATCH` responses, class-level and group declarations removing the `200`, content types and MVC `[Produces]`, conventions, typed results plus attributes adding up, empty `401`, `500` bodies, `Produces` on groups failing with CS1929, and the positional record's schema. Astro check reports no diagnostics, the production build excludes the draft, and the development preview renders all twelve internal anchors and five article links.
