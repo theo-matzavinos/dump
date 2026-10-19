@@ -1,34 +1,13 @@
 ---
 import { getCollection } from 'astro:content';
+import ArticleIndex from '../components/ArticleIndex.astro';
 import { SITE_DESCRIPTION } from '../consts';
 import SiteLayout from '../layouts/SiteLayout.astro';
 import { getVisibleBlogPosts } from '../utils/blog';
 
 const posts = getVisibleBlogPosts(await getCollection('blog'));
-
-// gRPC was written for an external colleague, so team-relevant articles come first.
-const grpcPostIndex = posts.findIndex((post) => post.id === 'grpc-onboarding');
-if (grpcPostIndex !== -1) {
-	const [grpcPost] = posts.splice(grpcPostIndex, 1);
-	posts.push(grpcPost);
-}
-
-const basePath = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
-const withBase = (path: string) => new URL(path.replace(/^\//, ''), `https://codex.invalid${basePath}`).pathname;
 ---
 
 <SiteLayout title="Articles" description={SITE_DESCRIPTION}>
-	<section class="article-list" aria-labelledby="articles-title">
-		<h1 id="articles-title" class="sr-only">Articles</h1>
-		{
-			posts.map((post) => (
-				<article class="article-item">
-					<h2>
-						<a href={withBase(`/blog/${post.id}/`)}>{post.data.title}</a>
-					</h2>
-					<p>{post.data.description}</p>
-				</article>
-			))
-		}
-	</section>
+	<ArticleIndex posts={posts} current="all" heading="Articles" />
 </SiteLayout>

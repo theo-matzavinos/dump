@@ -7,6 +7,9 @@ tags:
   - agents
   - tooling
   - fundamentals
+audience:
+  - frontend
+  - backend
 ---
 
 You ask a coding agent:

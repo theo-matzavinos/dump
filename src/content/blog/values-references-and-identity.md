@@ -6,8 +6,9 @@ updatedDate: "2026-10-15"
 tags:
   - javascript
   - typescript
-  - frontend
   - angular
+audience:
+  - frontend
 ---
 
 You click a task in a list to select it. A side panel opens, and you change the task's title there. Then you click Cancel, and the list already shows the new title, even though you never saved anything.

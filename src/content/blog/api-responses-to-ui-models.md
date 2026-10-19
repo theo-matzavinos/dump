@@ -7,7 +7,9 @@ tags:
   - typescript
   - angular
   - api
+audience:
   - frontend
+  - backend
 ---
 
 The task row on screen reads "Assigned to Mina Patel". The database row behind it doesn't contain that name at all, just `assignee_id: 7`. The editor for the same task doesn't show the name either; it offers a choice to keep or clear the assignment. So which of these is the task?

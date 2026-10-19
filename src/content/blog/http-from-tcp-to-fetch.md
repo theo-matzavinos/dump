@@ -8,6 +8,9 @@ tags:
   - networking
   - fetch
   - cors
+audience:
+  - frontend
+  - backend
 ---
 
 You click Save on the task board and the console says the request failed. That one line can hide four different problems:

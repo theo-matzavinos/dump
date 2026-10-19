@@ -8,6 +8,8 @@ tags:
   - change-detection
   - signals
   - performance
+audience:
+  - frontend
 ---
 
 Your task board shows "Remaining tasks: 3". You click a button that completes a task, and the count drops to 2. Then you change that handler so the count drops one second later, the way it would after a server confirms the save. Now the count stays at 3. It only catches up when you click a button again.

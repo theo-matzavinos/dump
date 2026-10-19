@@ -7,6 +7,9 @@ tags:
   - git
   - tooling
   - fundamentals
+audience:
+  - frontend
+  - backend
 ---
 
 Stage a file, edit it once more, and run `git status`: Git now lists that same file twice, once with staged changes and once with changes that aren't staged. It's holding two versions of the file at the same time. That looks like a glitch, but it falls straight out of how Git stores your work. The same design explains why creating a branch is instant even in a huge repository, and why rebasing onto a different base can give your commits new IDs even when the code looks identical.

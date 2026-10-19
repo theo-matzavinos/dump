@@ -7,7 +7,9 @@ tags:
   - http
   - caching
   - browser
+audience:
   - frontend
+  - backend
 ---
 
 You deploy a fix. A teammate opens the app and still gets the bug. They press Ctrl+Shift+R, and the bug is gone.

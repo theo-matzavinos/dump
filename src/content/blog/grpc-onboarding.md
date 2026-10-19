@@ -8,6 +8,8 @@ tags:
   - protobuf
   - openapi
   - typescript
+audience:
+  - frontend
 ---
 
 A task board loads one task from its backend and gets JSON back:

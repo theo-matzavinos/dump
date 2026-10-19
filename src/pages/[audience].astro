@@ -1,0 +1,27 @@
+---
+import { getCollection } from 'astro:content';
+import ArticleIndex from '../components/ArticleIndex.astro';
+import { SITE_DESCRIPTION } from '../consts';
+import SiteLayout from '../layouts/SiteLayout.astro';
+import { getVisibleBlogPosts } from '../utils/blog';
+
+export function getStaticPaths() {
+	return [
+		{ params: { audience: 'frontend' }, props: { audience: 'frontend', heading: 'Frontend articles' } },
+		{ params: { audience: 'backend' }, props: { audience: 'backend', heading: 'Backend articles' } },
+	] as const;
+}
+
+const { audience, heading } = Astro.props;
+
+const posts = [];
+for (const post of getVisibleBlogPosts(await getCollection('blog'))) {
+	if (post.data.audience.includes(audience)) {
+		posts.push(post);
+	}
+}
+---
+
+<SiteLayout title={heading} description={SITE_DESCRIPTION}>
+	<ArticleIndex posts={posts} current={audience} heading={heading} />
+</SiteLayout>

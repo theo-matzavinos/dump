@@ -8,6 +8,8 @@ tags:
   - runtimes
   - event-loop
   - performance
+audience:
+  - frontend
 ---
 
 You've probably heard that JavaScript is single-threaded and asynchronous. Both are true, but neither explains three things you'll run into eventually:

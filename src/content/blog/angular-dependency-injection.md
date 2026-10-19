@@ -7,6 +7,8 @@ tags:
   - angular
   - dependency-injection
   - typescript
+audience:
+  - frontend
 ---
 
 An archive page needs to load tasks from a different server address, so it overrides the `API_URL` value in its own `providers`. The page itself now sees `/archive-api`. But the `TaskApi` service the page asks Angular for still sends requests to `/api`. Meanwhile, two task panels on the same board each keep their own selected task, even though both inject the same service class.

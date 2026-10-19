@@ -7,6 +7,9 @@ tags:
   - docker
   - tooling
   - fundamentals
+audience:
+  - frontend
+  - backend
 ---
 
 Three things confuse almost everyone the first time they use Docker. You delete a 4 MB file in a Dockerfile, and the image is still 4 MB bigger. You start a container, it prints a message, and then it's gone. And your app answers at `localhost` in the browser, but inside a container `localhost` points somewhere else entirely.

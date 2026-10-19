@@ -1,0 +1,62 @@
+---
+import type { CollectionEntry } from 'astro:content';
+
+type Audience = CollectionEntry<'blog'>['data']['audience'][number];
+
+interface Props {
+	posts: CollectionEntry<'blog'>[];
+	current: Audience | 'all';
+	heading: string;
+}
+
+const { posts, current, heading } = Astro.props;
+
+// gRPC was written for an external colleague, so team-relevant articles come first.
+const orderedPosts = [...posts];
+const grpcPostIndex = orderedPosts.findIndex((post) => post.id === 'grpc-onboarding');
+if (grpcPostIndex !== -1) {
+	const [grpcPost] = orderedPosts.splice(grpcPostIndex, 1);
+	orderedPosts.push(grpcPost);
+}
+
+const basePath = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/`;
+const withBase = (path: string) => new URL(path.replace(/^\//, ''), `https://codex.invalid${basePath}`).pathname;
+
+const filters: { label: string; value: Audience | 'all'; href: string }[] = [
+	{ label: 'All', value: 'all', href: withBase('/') },
+	{ label: 'Frontend', value: 'frontend', href: withBase('/frontend/') },
+	{ label: 'Backend', value: 'backend', href: withBase('/backend/') },
+];
+---
+
+<section class="article-list" aria-labelledby="articles-title">
+	<h1 id="articles-title" class="sr-only">{heading}</h1>
+	<nav class="audience-nav" aria-label="Filter articles by audience">
+		<ul>
+			{
+				filters.map((filter) => (
+					<li>
+						<a href={filter.href} aria-current={filter.value === current ? 'page' : undefined}>
+							{filter.label}
+						</a>
+					</li>
+				))
+			}
+		</ul>
+	</nav>
+	{
+		orderedPosts.map((post) => (
+			<article class="article-item">
+				<h2>
+					<a href={withBase(`/blog/${post.id}/`)}>{post.data.title}</a>
+				</h2>
+				<p>{post.data.description}</p>
+				{post.data.tags.length > 0 && (
+					<ul class="tag-list" aria-label="Tags">
+						{post.data.tags.map((tag) => <li>{tag}</li>)}
+					</ul>
+				)}
+			</article>
+		))
+	}
+</section>

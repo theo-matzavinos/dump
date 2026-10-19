@@ -6,8 +6,9 @@ updatedDate: "2026-10-15"
 tags:
   - css
   - layout
-  - frontend
   - angular
+audience:
+  - frontend
 ---
 
 You add a task with a long title, and the Done and Remove buttons slide off the edge of the row. You give the main column `1fr` so it takes the leftover space, and it pushes past the side of the page anyway. You put a small count badge in the top-right corner of the task panel, and it shows up in the top-right corner of the whole page.

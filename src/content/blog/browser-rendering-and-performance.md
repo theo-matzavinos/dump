@@ -9,6 +9,8 @@ tags:
   - performance
   - javascript
   - angular
+audience:
+  - frontend
 ---
 
 You expand a task's details, mark it complete, or open its editor. The JavaScript might change only one attribute. The browser still has to work out what that change means for the visible page, and that work is where many rendering performance problems come from.
