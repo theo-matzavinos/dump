@@ -67,7 +67,7 @@ A second series for backend developers who know C# and .NET but haven't looked u
 
 ### Building and running the API
 
-11. **Idempotency, retries, and timeouts** — Why a retried request can create a task twice, idempotency keys, and retry policies.
+11. **Idempotency keys** — Why a retried request can create a task twice, what resends requests without your code deciding to, and idempotency keys for the task board and its calls to the mail service.
 12. **Changing the schema without breaking anything** — Migrations and expand-then-contract deployments.
 13. **Authentication** — Cookies and tokens, what a JWT signature proves, what token validation checks, and OIDC with Keycloak.
 14. **Authorization** — Policies, and checking whether a user may change a specific task.
