@@ -22,3 +22,4 @@
 - Use plain Docker and Docker Compose commands and terms for containers. Don't mention Podman or use Podman-only options (such as `podman run` or the `Z` volume label), even when the examples were measured through Podman.
 - Show code in small slices, each followed by what to notice. Link or collapse full files instead of dumping long listings, and keep styling classes out of examples that aren't about styling.
 - Keep the Contents list. Limit closing quizzes to three or four questions that test the article's main point.
+- When an article is published on a day that already has one, give its `pubDate` a UTC time one hour after that day's latest, starting at `09:00:00Z`. Articles with the same `pubDate` sort by file name instead of publication order.
