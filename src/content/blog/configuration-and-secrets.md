@@ -35,7 +35,7 @@ You'll need [the idempotency keys article](/dump/blog/idempotency-keys-and-repea
 
 ## Set up the example
 
-The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), Microsoft.Extensions.Configuration.KeyPerFile 10.0.13, PostgreSQL 18.6, Keycloak 26.8.1, and Docker Compose 5.5.1, with the API in the `Production` environment.
+The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), PostgreSQL 18.6, Keycloak 26.8.1, and Docker Compose 5.5.1, with the API in the `Production` environment.
 
 The code starts from the task board at the end of [the authorization article](/dump/blog/checking-who-may-change-a-task/). [The layered and sliced article](/dump/blog/layered-and-sliced-code-organization/) and [the endpoints article](/dump/blog/resource-style-and-action-style-endpoints/) compare its layout and endpoint style with the alternatives. Its `appsettings.json` holds the values for a local run:
 
@@ -304,7 +304,7 @@ secrets:
     file: ./mail-api-key.txt
 ```
 
-The task board reads that folder with one more source, from the package `Microsoft.Extensions.Configuration.KeyPerFile`, right after `CreateBuilder`:
+The task board reads that folder with one more source right after `CreateBuilder`. ASP.NET Core already includes it, so no package is needed:
 
 ```csharp
 builder.Configuration.AddKeyPerFile("/run/secrets", optional: true);
