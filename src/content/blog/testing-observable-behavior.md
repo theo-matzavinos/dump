@@ -8,6 +8,7 @@ tags:
   - testing
 audience:
   - frontend
+  - backend
 ---
 
 Here's a quick way to find out whether your tests protect anything: break the code on purpose and run them. Unhook the Save button from its form, so clicking it does nothing. If every test still passes, none of them was watching the Save button. Then try the opposite: give a private method a clearer name without changing what the page does. If tests fail now, they were checking how the code is written instead of what it does.
