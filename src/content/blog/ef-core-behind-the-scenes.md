@@ -2,6 +2,7 @@
 title: "Why the same LINQ filter can read a million rows: what EF Core sends to PostgreSQL, and when to write SQL yourself"
 description: "Read the SQL EF Core sends, learn where a LINQ filter actually runs, what change tracking and SaveChanges do, how to avoid N+1 queries, and when FromSql, ExecuteUpdate, or Dapper is the better tool."
 pubDate: "2026-10-19T13:00:00Z"
+updatedDate: "2026-10-21"
 tags:
   - ef-core
   - dotnet
@@ -114,7 +115,7 @@ Register it in `Program.cs`:
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddNpgsqlDataSource("Host=localhost;Port=5432;Username=postgres;Password=taskboard;Database=taskboard");
+builder.Services.AddNpgsqlDataSource("Host=localhost;Port=55460;Username=postgres;Database=taskboard");
 builder.Services.AddDbContext<TaskBoardDb>(options => options.UseNpgsql());
 ```
 

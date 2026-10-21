@@ -2,6 +2,7 @@
 title: "Why listing one person's tasks reads every task: tables, indexes, and parameters in PostgreSQL"
 description: "Learn what PostgreSQL does to find rows: tables and keys, joins, how a B-tree index works, how to read a query plan, when an index doesn't help, and why parameters stop SQL injection when escaping doesn't."
 pubDate: "2026-10-19T12:00:00Z"
+updatedDate: "2026-10-21"
 tags:
   - sql
   - postgresql
@@ -54,8 +55,10 @@ The examples use PostgreSQL 18.6, the .NET 10 SDK, and the Npgsql 10.0.3 data pr
 Run PostgreSQL in Docker. [Docker behind the scenes](/dump/blog/docker-behind-the-scenes/) explains containers if you haven't used them:
 
 ```bash
-docker run --name taskboard-db -e POSTGRES_PASSWORD=taskboard -e POSTGRES_DB=taskboard -p 127.0.0.1:5432:5432 -d postgres:18.6-trixie
+docker run --name taskboard-db -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=taskboard -p 127.0.0.1:55460:5432 -d postgres:18.6-trixie
 ```
+
+`POSTGRES_HOST_AUTH_METHOD=trust` lets connections in without a password. That's acceptable only because `127.0.0.1` makes the port reachable from your machine alone. Port 55460 keeps clear of a PostgreSQL you may already run on its default port, 5432.
 
 The container has no volume, so the data disappears when you remove it. That's fine here, because a script creates all of it. Save the script below as `seed.sql` and load it; it takes about seven seconds:
 
@@ -588,7 +591,7 @@ Register a **data source**, Npgsql's object that holds the connection string and
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddNpgsqlDataSource("Host=localhost;Port=5432;Username=postgres;Password=taskboard;Database=taskboard");
+builder.Services.AddNpgsqlDataSource("Host=localhost;Port=55460;Username=postgres;Database=taskboard");
 
 var app = builder.Build();
 ```
