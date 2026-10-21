@@ -19,5 +19,6 @@
 # Article structure
 
 - Use the task board as the running example where the topic allows, and keep code style consistent across the series.
+- Use plain Docker and Docker Compose commands and terms for containers. Don't mention Podman or use Podman-only options (such as `podman run` or the `Z` volume label), even when the examples were measured through Podman.
 - Show code in small slices, each followed by what to notice. Link or collapse full files instead of dumping long listings, and keep styling classes out of examples that aren't about styling.
 - Keep the Contents list. Limit closing quizzes to three or four questions that test the article's main point.
