@@ -1,7 +1,7 @@
 ---
 title: "Why listing one person's tasks reads every task: tables, indexes, and parameters in PostgreSQL"
 description: "Learn what PostgreSQL does to find rows: tables and keys, joins, how a B-tree index works, how to read a query plan, when an index doesn't help, and why parameters stop SQL injection when escaping doesn't."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T12:00:00Z"
 tags:
   - sql
   - postgresql

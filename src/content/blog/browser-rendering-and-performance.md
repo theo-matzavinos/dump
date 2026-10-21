@@ -1,7 +1,7 @@
 ---
 title: "From DOM changes to pixels: what the browser actually does"
 description: "Follow a task update through style, layout, paint, rasterization, and compositing, then use a real recording to find forced layout and fix it without changing the result."
-pubDate: "2026-10-07"
+pubDate: "2026-10-07T10:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - browser

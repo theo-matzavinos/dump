@@ -1,7 +1,7 @@
 ---
 title: "Same task board, two shapes: resource-style and action-style endpoints in ASP.NET Core"
 description: "Build a task search and task completion as resource-style and as action-style endpoints, check what REST and HTTP actually say about POST, and compare what changes for binding, URL limits, caching, logs, client code, and the OpenAPI document."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T09:00:00Z"
 tags:
   - aspnet-core
   - http

@@ -1,7 +1,7 @@
 ---
 title: "The spec says 200, the endpoint sends 204: an OpenAPI document that matches your ASP.NET Core code"
 description: "Find where ASP.NET Core's generated OpenAPI document and your endpoints disagree, declare the responses your code, middleware, and framework send in both controllers and minimal APIs, and make every API change show up in code review."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T16:00:00Z"
 updatedDate: "2026-10-20"
 tags:
   - aspnet-core

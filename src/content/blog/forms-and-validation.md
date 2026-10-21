@@ -1,7 +1,7 @@
 ---
 title: "Forms and validation: drafts, errors, and saving"
 description: "Build a task editor that keeps an edit draft apart from saved data, shows errors at the right moment, and handles a save that can fail, starting from a plain HTML form and ending with Zod and Angular Signal Forms."
-pubDate: "2026-10-06"
+pubDate: "2026-10-06T11:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - angular

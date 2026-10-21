@@ -1,7 +1,7 @@
 ---
 title: "Same task board, two layouts: layered and sliced code organization in ASP.NET Core"
 description: "Build the task board's Tasks feature as an Application project and an Adapter project joined by ports, and as one file per use case, then compare what three everyday changes touch, what the compiler checks, how you find and test the code, and where ports and adapters belong in both."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T10:00:00Z"
 tags:
   - aspnet-core
   - dotnet

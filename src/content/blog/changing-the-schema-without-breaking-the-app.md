@@ -1,7 +1,7 @@
 ---
 title: "Two versions, one database: changing the schema without breaking the running app"
 description: "Why a migration that's correct for the new code breaks the version that's still running, how to split a breaking change into expand, migrate, and contract releases with EF Core migrations, and how to run each migration against a live PostgreSQL database without stalling the API."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T12:00:00Z"
 tags:
   - aspnet-core
   - dotnet

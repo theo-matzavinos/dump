@@ -1,7 +1,7 @@
 ---
 title: "Valid token, wrong task: checking who may change a task in ASP.NET Core"
 description: "Why a role on an endpoint can't decide whether a user may change a particular task, how to find the caller's own row from a Keycloak token, and why the per-task check belongs in the UPDATE that changes the task, with the race that slips past a check made first and two EF Core traps in the fix."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T14:00:00Z"
 tags:
   - aspnet-core
   - dotnet

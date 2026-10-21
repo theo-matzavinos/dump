@@ -1,7 +1,7 @@
 ---
 title: "Null until someone completes a task: configuration and secrets in ASP.NET Core"
 description: "Where an ASP.NET Core app's settings come from and which source wins, why a setting nobody set stays null until some code trips over it, how a validated options class stops the app at startup instead, and where an API key belongs on a developer's machine and in production."
-pubDate: "2026-10-21"
+pubDate: "2026-10-21T09:00:00Z"
 tags:
   - aspnet-core
   - dotnet

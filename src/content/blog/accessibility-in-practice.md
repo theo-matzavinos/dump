@@ -1,7 +1,7 @@
 ---
 title: "Making the whole interaction accessible"
 description: "Follow one task from a named Edit button through a modal editor, error and status messages, and a sensible focus destination after every action."
-pubDate: "2026-10-06"
+pubDate: "2026-10-06T10:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - accessibility

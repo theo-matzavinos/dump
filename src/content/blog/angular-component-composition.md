@@ -1,7 +1,7 @@
 ---
 title: "Splitting a task page into Angular components"
 description: "Decide which component holds each piece of state, connect components with typed inputs and outputs, keep an edit draft alive with linkedSignal, and wrap page content with a projected section frame."
-pubDate: "2026-10-06"
+pubDate: "2026-10-06T09:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - angular

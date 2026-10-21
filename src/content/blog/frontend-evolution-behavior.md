@@ -1,7 +1,7 @@
 ---
 title: "From changing elements to managing application state"
 description: "Build the same task list with native JavaScript, jQuery, and Angular to see who keeps the count, the rows, and the filter in agreement."
-pubDate: "2026-10-02"
+pubDate: "2026-10-02T11:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - javascript

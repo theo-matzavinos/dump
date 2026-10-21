@@ -1,7 +1,7 @@
 ---
 title: "The URL is part of your application's state"
 description: "Keep a task list's search, filter, sort, and page in the URL so refresh, copied links, and the Back button all show the same view, using Angular Router input binding and signals."
-pubDate: "2026-10-07"
+pubDate: "2026-10-07T09:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - angular

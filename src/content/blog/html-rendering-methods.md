@@ -1,7 +1,7 @@
 ---
 title: "Where HTML comes from: static pages, SSR, SPAs, and hydration"
 description: "Follow one task board site through static generation, server rendering, client rendering, and hydration, and see where and when each one makes the page's HTML."
-pubDate: "2026-09-30"
+pubDate: "2026-09-30T11:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - rendering

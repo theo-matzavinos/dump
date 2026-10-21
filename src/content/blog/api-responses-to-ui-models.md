@@ -1,7 +1,7 @@
 ---
 title: "One task, different models: from database rows to the interface"
 description: "Follow one task from database rows through a JSON response, a checked frontend model, and the row and editor that display it, then send an edit back and check the server's reply."
-pubDate: "2026-10-06"
+pubDate: "2026-10-06T12:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - typescript

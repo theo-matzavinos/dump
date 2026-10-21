@@ -1,7 +1,7 @@
 ---
 title: "Testing what your code does from the outside"
 description: "Write Angular tests that fail when the Save button breaks and keep passing when you rename a private method: test a function, a component, an HTTP request and a real browser through what each one exposes."
-pubDate: "2026-10-08"
+pubDate: "2026-10-08T09:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - angular

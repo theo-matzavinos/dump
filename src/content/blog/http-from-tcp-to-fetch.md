@@ -1,7 +1,7 @@
 ---
 title: "HTTP from TCP to fetch: messages, connections, and CORS"
 description: "Follow one task-board request from TCP bytes to HTTP messages to fetch, learn why browsers block some cross-origin responses, and find which layer broke when a request fails."
-pubDate: "2026-09-30"
+pubDate: "2026-09-30T12:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - http

@@ -1,7 +1,7 @@
 ---
 title: "From bytes to your handler: how ASP.NET Core runs a request"
 description: "Follow one task-board request from Kestrel through middleware, routing, parameter binding and filters to your handler, and learn to tell which of those steps sent the response you're looking at."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T09:00:00Z"
 tags:
   - aspnet-core
   - dotnet

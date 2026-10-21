@@ -1,7 +1,7 @@
 ---
 title: "Why the same LINQ filter can read a million rows: what EF Core sends to PostgreSQL, and when to write SQL yourself"
 description: "Read the SQL EF Core sends, learn where a LINQ filter actually runs, what change tracking and SaveChanges do, how to avoid N+1 queries, and when FromSql, ExecuteUpdate, or Dapper is the better tool."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T13:00:00Z"
 tags:
   - ef-core
   - dotnet

@@ -1,7 +1,7 @@
 ---
 title: "How CSS decides where things go"
 description: "Work out an element's size and position from normal flow, the box model, flexbox, grid, overflow, and positioning, then debug the layout the browser actually built."
-pubDate: "2026-10-02"
+pubDate: "2026-10-02T09:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - css

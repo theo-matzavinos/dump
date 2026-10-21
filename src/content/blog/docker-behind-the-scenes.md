@@ -1,7 +1,7 @@
 ---
 title: "Docker behind the scenes: images, containers, and what they can see"
 description: "Build a small greeting app with Angular, nginx, a Node API, and PostgreSQL, and watch why a deleted file still takes space, why a container stops on its own, and why localhost means something different inside a container."
-pubDate: "2026-10-08"
+pubDate: "2026-10-08T11:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - docker

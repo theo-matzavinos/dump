@@ -1,7 +1,7 @@
 ---
 title: "Sent twice, saved twice: idempotency keys in ASP.NET Core"
 description: "Why a timeout after the save turns a retry into a duplicate task, what sends a request twice without your code deciding to, and how an idempotency key saved in PostgreSQL lets the task board recognize the repeat, both for its own POST /tasks and for its calls to the mail service."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T11:00:00Z"
 tags:
   - aspnet-core
   - dotnet

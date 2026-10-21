@@ -1,7 +1,7 @@
 ---
 title: "Who creates your services: dependency injection and lifetimes in ASP.NET Core"
 description: "Find out why a saved task can vanish without an error: how ASP.NET Core creates, shares and disposes your services, what singleton, scoped and transient really mean, and how to spot a captive dependency."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T10:00:00Z"
 tags:
   - aspnet-core
   - dotnet

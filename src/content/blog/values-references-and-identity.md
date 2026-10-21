@@ -1,7 +1,7 @@
 ---
 title: "What actually changes when you change a variable?"
 description: "Follow a task through assignment, mutation, copying, and callbacks to understand which values are independent and which objects are still shared."
-pubDate: "2026-10-02"
+pubDate: "2026-10-02T10:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - javascript

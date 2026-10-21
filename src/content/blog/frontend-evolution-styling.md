@@ -1,7 +1,7 @@
 ---
 title: "Components + Tailwind: benefits and tradeoffs"
 description: "When you need to change how a task row looks, where do you go and what else changes? Compare plain CSS, Sass, UI libraries, and Angular component styles, then see what Angular components with Tailwind make easier and what they cost."
-pubDate: "2026-10-02"
+pubDate: "2026-10-02T12:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - css

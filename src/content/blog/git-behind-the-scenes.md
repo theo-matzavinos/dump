@@ -1,7 +1,7 @@
 ---
 title: "Git behind the scenes: objects, snapshots, and moving pointers"
 description: "Build a throwaway repository with two task-app files and watch which Git commands save new snapshots and which ones only move names: staging, branching, merging, rebasing, syncing, and undo."
-pubDate: "2026-10-08"
+pubDate: "2026-10-08T10:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - git

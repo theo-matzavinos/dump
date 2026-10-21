@@ -1,7 +1,7 @@
 ---
 title: "Same endpoints, two styles: controllers and minimal APIs in ASP.NET Core"
 description: "Build the task board's endpoints as a controller and as minimal API endpoints, and compare what actually differs: binding defaults, validation, error bodies, dependencies, testing, speed, and what each style is for."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T15:00:00Z"
 updatedDate: "2026-10-20"
 tags:
   - aspnet-core

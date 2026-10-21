@@ -1,7 +1,7 @@
 ---
 title: "Why users still see the old version after you deploy"
 description: "Learn how browser caching decides when a saved copy can be reused, how ETags check it, and how hashed file names and always-checked HTML get a deployment in front of users."
-pubDate: "2026-10-07"
+pubDate: "2026-10-07T11:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - http

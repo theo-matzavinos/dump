@@ -1,7 +1,7 @@
 ---
 title: "gRPC for frontend developers: protobuf, OpenAPI, and generated clients"
 description: "Follow one task-board call through OpenAPI, protobuf, and gRPC: what each one describes, what the generated client does, how the call leaves the browser, and how to change a message without breaking clients."
-pubDate: "2026-09-30"
+pubDate: "2026-09-30T09:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - grpc

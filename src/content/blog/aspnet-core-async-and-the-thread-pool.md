@@ -1,7 +1,7 @@
 ---
 title: "Waiting without blocking: async, await, and the thread pool in ASP.NET Core"
 description: "Why one .Result can slow down every endpoint in your API: what threads do while your code waits, how the thread pool runs requests, what await really does, and how to cancel work when the client leaves."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T11:00:00Z"
 tags:
   - aspnet-core
   - dotnet

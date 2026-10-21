@@ -1,7 +1,7 @@
 ---
 title: "JavaScript engines and runtimes: what happens when your code runs"
 description: "Why a promise callback runs before a zero-delay timer, why async code can still freeze a page, and why unused objects can stay in memory: engines, runtimes, the call stack, garbage collection, and the event loop."
-pubDate: "2026-09-30"
+pubDate: "2026-09-30T10:00:00Z"
 updatedDate: "2026-10-15"
 tags:
   - javascript

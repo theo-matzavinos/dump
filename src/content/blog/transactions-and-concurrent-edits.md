@@ -1,7 +1,7 @@
 ---
 title: "Why a saved edit can vanish: transactions, isolation, and concurrent edits in PostgreSQL"
 description: "Make database changes all-or-nothing, see what concurrent transactions can see, stop lost updates with atomic updates, row locks, or retries, and turn a stale edit into 412 Precondition Failed with a version column and ETags."
-pubDate: "2026-10-19"
+pubDate: "2026-10-19T14:00:00Z"
 updatedDate: "2026-10-20"
 tags:
   - postgresql

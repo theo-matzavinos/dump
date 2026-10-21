@@ -1,7 +1,7 @@
 ---
 title: "Signed isn't enough: what an ASP.NET Core API must check in a Keycloak token"
 description: "How a request says who sent it, how Keycloak issues a token, what a JWT signature proves and what it doesn't, and every check ASP.NET Core's JwtBearer handler makes, each shown with the token it refuses, plus Keycloak's realm roles and tests that don't need Keycloak."
-pubDate: "2026-10-20"
+pubDate: "2026-10-20T13:00:00Z"
 tags:
   - aspnet-core
   - dotnet
