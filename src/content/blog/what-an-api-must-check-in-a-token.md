@@ -37,7 +37,7 @@ You'll need [the HTTP article](/dump/blog/http-from-tcp-to-fetch/) for headers, 
 
 ## Set up the example
 
-The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), Microsoft.AspNetCore.Authentication.JwtBearer 10.0.13 (which brings Microsoft.IdentityModel 8.19.2), Keycloak 26.8.1 in a container run with Podman 6.1.1, OpenSSL 3.6.4, PostgreSQL 18.6, and Chromium 152, with the API in the `Production` environment.
+The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), Microsoft.AspNetCore.Authentication.JwtBearer 10.0.13 (which brings Microsoft.IdentityModel 8.19.2), Keycloak 26.8.1 in a Docker container, OpenSSL 3.6.4, PostgreSQL 18.6, and Chromium 152, with the API in the `Production` environment.
 
 The code starts from the sliced task board at the end of [the schema changes article](/dump/blog/changing-the-schema-without-breaking-the-app/), which has no authentication yet: anyone who can reach it can change any task. [The layered and sliced article](/dump/blog/layered-and-sliced-code-organization/) and [the endpoints article](/dump/blog/resource-style-and-action-style-endpoints/) compare its layout and endpoint style with the alternatives. Its tests still referred to the `Done` property that article removed, so two lines in `CompleteTaskTests.cs` now check `Status` instead.
 
@@ -164,13 +164,13 @@ The whole realm comes from one file, which Keycloak imports on startup:
 The passwords are for this local setup only. The `protocolMappers` and `fullScopeAllowed` settings matter later, in the audience check. Start Keycloak with the file in a `keycloak` folder:
 
 ```bash
-podman run -d --name keycloak -p 127.0.0.1:8180:8080 \
+docker run -d --name keycloak -p 127.0.0.1:8180:8080 \
   -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin-local-only \
-  -v ./keycloak:/opt/keycloak/data/import:ro,Z \
+  -v ./keycloak:/opt/keycloak/data/import:ro \
   quay.io/keycloak/keycloak:26.8.1 start-dev --import-realm --hostname=http://localhost:8180
 ```
 
-Docker takes the same arguments. What to notice:
+What to notice:
 
 - `start-dev` runs Keycloak over plain HTTP with an in-memory database, which is only for trying things out.
 - `--hostname` fixes the address Keycloak writes into its tokens. Without it, a token requested through `http://127.0.0.1:8181` said it came from `http://127.0.0.1:8181/realms/taskboard`, and an API configured with `localhost` refused it.

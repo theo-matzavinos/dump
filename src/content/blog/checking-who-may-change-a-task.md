@@ -36,7 +36,7 @@ You'll need [the token article](/dump/blog/what-an-api-must-check-in-a-token/) f
 
 ## Set up the example
 
-The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), EF Core 10.0.4 with Npgsql 10.0.3, Keycloak 26.8.1 in a container run with Podman 6.1.1, and PostgreSQL 18.6, with the API in the `Production` environment.
+The examples use the .NET 10 SDK (ASP.NET Core 10.0.13), EF Core 10.0.4 with Npgsql 10.0.3, Keycloak 26.8.1 in a Docker container, and PostgreSQL 18.6, with the API in the `Production` environment.
 
 The code starts from the task board at the end of [the token article](/dump/blog/what-an-api-must-check-in-a-token/): JwtBearer checks Keycloak's tokens, realm roles are mapped from `realm_access`, the `/tasks` group requires a signed-in user, and `POST /tasks` requires the `editor` policy. [The layered and sliced article](/dump/blog/layered-and-sliced-code-organization/) and [the endpoints article](/dump/blog/resource-style-and-action-style-endpoints/) compare its layout and endpoint style with the alternatives. Completing a task still mails the assignee through the mail service from [the idempotency keys article](/dump/blog/idempotency-keys-and-repeated-requests/).
 
